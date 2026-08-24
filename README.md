@@ -1,0 +1,203 @@
+# Nifty 50 Options Strategy Framework — Upstox
+
+Implementation of the dual-track Nifty 50 options framework in
+[`docs/Nifty_50_Option_Strategies_PaperTrade_Setup.pdf`](docs/Nifty_50_Option_Strategies_PaperTrade_Setup.pdf),
+running on the Upstox API.
+
+It **paper trades by default** and switches to **actual trading** through a
+single guarded switch. Both modes run the identical strategy, sizing and risk
+code — the only difference is where the orders land.
+
+| | Track A | Track B |
+|---|---|---|
+| Style | Intraday debit momentum | Weekly credit decay |
+| Instrument | ITM/ATM CE or PE, delta 0.50–0.60 | 4-leg iron condor, shorts at delta ~0.15 |
+| Horizon | 5 min – 2 hours, squared off daily | 2–5 days, held toward weekly expiry |
+| Driver | Delta expansion + MACD acceleration | Theta decay in consolidation |
+| Risk | 2% of capital (₹4,000), outlay < ₹15,000 | Capped by the 100-point wings |
+| Exit | MACD flattens/reverses, price back inside 20 EMA, or 1:2 target | 50–60% of credit captured, or short strike touched |
+
+---
+
+## The paper ↔ actual trading switch
+
+Everything routes through one factory, `nifty_options.brokers.factory.build_broker`.
+It returns a `PaperBroker` or a `LiveBroker`; the engine cannot tell them apart.
+
+```
+config / env / CLI  ──▶  TradingMode  ──▶  build_broker()  ──┬──▶ PaperBroker  (simulated fills)
+                                              guards        └──▶ LiveBroker   (real orders)
+```
+
+### Checking what will happen before you run
+
+```bash
+python -m nifty_options mode
+```
+
+```
+Effective mode : PAPER
+What happens   : PAPER -- simulated fills, nothing is sent to the exchange.
+Journal        : data/journal/tracking_sheet_paper.csv
+Kill switch    : data/KILL_SWITCH (clear)
+```
+
+### Paper trading (default)
+
+```bash
+python -m nifty_options run                 # both tracks
+python -m nifty_options run --track a       # Track A only
+python -m nifty_options run --once          # a single evaluation, then exit
+```
+
+Paper fills are simulated against the **live** Upstox bid/ask (crossing the
+spread), with slippage and the full NSE cost stack — brokerage, STT, exchange
+transaction charges, SEBI fees, stamp duty and GST — so the paper PnL in the
+tracking sheet is directly comparable to what live trading would have returned.
+
+### Switching to actual trading
+
+Five independent things must line up. Any one of them missing keeps you in
+paper mode, and the CLI tells you which one:
+
+1. **Mode resolves to live** — `--live`, `--mode live`, `UPSTOX_TRADING_MODE=live`,
+   or `mode: live` in `config.yaml` (precedence in that order).
+2. **`live.enabled: true`** in `config.yaml`.
+3. **`UPSTOX_LIVE_CONFIRM`** matches `live.confirmation_phrase` exactly.
+4. **API credentials present** — `UPSTOX_API_KEY` and `UPSTOX_API_SECRET`.
+5. **Typing `LIVE`** at the interactive prompt (bypass with `--yes` only for
+   scheduled runs).
+
+```bash
+# 1. dry run first: the live code path, but orders are logged instead of sent
+python -m nifty_options run --live --dry-run
+
+# 2. the real thing
+export UPSTOX_LIVE_CONFIRM="I UNDERSTAND THIS TRADES REAL MONEY"
+python -m nifty_options run --live
+```
+
+Live mode prints a banner and every order is logged at `WARNING` before it goes out:
+
+```
+================================================================
+  LIVE TRADING ARMED -- ORDERS WILL USE REAL MONEY
+  Capital at risk : Rs 4,00,000
+  Max order value : Rs 60,000
+  Dry run         : False
+  Kill switch     : touch data/KILL_SWITCH
+================================================================
+```
+
+### Pre-trade gate on every live order
+
+Arming live mode is not a blank cheque. `LiveBroker` re-checks each order and
+rejects it if any of these fail:
+
+- the kill switch file exists,
+- the instrument is not an NSE/BSE F&O contract,
+- quantity is not a whole multiple of the lot size,
+- order value exceeds `risk.live_max_order_value`,
+- the daily live order count exceeds `risk.live_max_daily_orders`,
+- the market is closed.
+
+Condor legs are sent as one basket (`/v3/order/multi/place`) with the
+protective long wings ordered first, so a partial fill never leaves a naked
+short. If an entry fills only partially, the filled legs are unwound
+immediately.
+
+### Stopping everything
+
+```bash
+python -m nifty_options panic     # kill switch + square off every position
+python -m nifty_options resume    # release the kill switch
+```
+
+The kill switch also trips automatically when the daily loss limit
+(`risk.daily_loss_limit_pct`, default 4% of total capital) is breached.
+
+---
+
+## Setup
+
+```bash
+pip install -r requirements.txt
+cp .env.example .env          # add your Upstox API key and secret
+python -m nifty_options login # one-time OAuth; tokens expire daily at 03:30 IST
+```
+
+Create an app at <https://account.upstox.com/developer/apps> and set its
+redirect URI to match `upstox.redirect_uri` in `config.yaml`.
+
+## Results and evaluation
+
+Every closed trade is journalled in the document's section 5 format, one file
+per mode (`tracking_sheet_paper.csv`, `tracking_sheet_live.csv`), so paper and
+live results never blend:
+
+| Date | Track | Strategy / Legs | Entry | Exit | Net Points | Realized PnL (₹) |
+|---|---|---|---|---|---|---|
+| 2026-08-25 | Track A | Nifty 24150 CE (Buy) | 112.50 | 148.00 | +35.50 | +2662.50 |
+| 2026-08-25 | Track B | Nifty 24000/24300 Condor | 42.00 | 18.00 | +24.00 | +3600.00 |
+
+```bash
+python -m nifty_options report --markdown results.md
+```
+
+produces the section 4 comparison — win rate, expectancy, profit factor,
+annualised Sharpe, max drawdown and charge drag per track — which is the
+4-week experiment's actual output.
+
+## Layout
+
+```
+nifty_options/
+  config.py            mode resolution + live guards
+  engine.py            data -> strategies -> orders -> journal
+  risk.py              daily loss limit, position caps, kill switch
+  journal.py           tracking sheet + evaluation metrics
+  indicators.py        20 EMA, MACD(12/26/9), Ichimoku(9/26/52)
+  brokers/
+    factory.py         THE SWITCH
+    paper.py           simulated fills, NSE cost model
+    live.py            real orders + pre-trade gate
+  strategies/
+    track_a.py         intraday debit momentum
+    track_b.py         weekly iron condor
+  upstox/
+    auth.py            OAuth + daily token handling
+    client.py          REST wrapper (v2 + v3)
+    instruments.py     expiries + delta-based strike selection
+```
+
+```bash
+python -m pytest tests/ -q      # 113 tests, no network or credentials needed
+```
+
+---
+
+## Notes on the specification
+
+Three things in the source document needed a decision, all resolved
+conservatively and all configurable:
+
+1. **Track A capital.** Section 2 states ₹20,00,000 for Track A, but section 1
+   allocates ₹4,00,000 total split ₹2,00,000 / ₹2,00,000, and section 3's "2%
+   of capital (₹4,000)" only works against ₹2,00,000. Implemented as
+   **₹2,00,000** (`track_a.capital`).
+2. **Condor margin.** The document's ₹1.2–1.5 lakh for 2–3 lots is SPAN+exposure
+   margin, not the wing-width max loss. Sizing asks Upstox `/charges/margin`
+   for a real quote and falls back to `margin_per_lot_estimate` (₹60,000).
+3. **Lot size.** Set to 75 in `config.yaml`. NSE revises this — verify before a
+   live run.
+
+Two guards were added beyond the document, because paper testing surfaced the
+need: a Track A re-entry cooldown (the breakout candles are still in the window
+right after an exit, so the identical setup would re-arm on the next tick) and
+a Track B weekly structural-trade cap, matching "1–2 structural trades / week".
+Both counts are rebuilt from the journal on startup so a restart cannot
+silently reset them.
+
+**This is trading software. Paper trade it for the full 4-week cycle described
+in the document, then dry-run the live path, before letting it touch real
+money.**

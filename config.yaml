@@ -1,0 +1,109 @@
+# Nifty 50 Options Strategy Framework -- runtime configuration
+# Reference: docs/Nifty_50_Option_Strategies_PaperTrade_Setup.pdf
+
+# ---------------------------------------------------------------------------
+# TRADING MODE -- the paper/actual switch.
+#   paper : simulated fills, nothing reaches the exchange   (default)
+#   live  : REAL orders, REAL money
+# Overridden by UPSTOX_TRADING_MODE, and by --mode/--live on the CLI.
+# Setting this to `live` is NOT sufficient on its own -- see the `live:` block.
+# ---------------------------------------------------------------------------
+mode: paper
+
+instrument_key: "NSE_INDEX|Nifty 50"
+underlying_symbol: NIFTY
+exchange: NSE_FO
+lot_size: 75          # NSE Nifty index-option lot size; verify before a live run
+product: I            # I = intraday (MIS), D = carry-forward (NRML)
+timezone: Asia/Kolkata
+log_level: INFO
+
+upstox:
+  # Prefer the environment variables UPSTOX_API_KEY / UPSTOX_API_SECRET.
+  api_key: ""
+  api_secret: ""
+  redirect_uri: "http://127.0.0.1:5000/callback"
+  token_path: data/upstox_token.json
+
+# ---------------------------------------------------------------------------
+# Track A -- Intraday Debit Momentum
+# ---------------------------------------------------------------------------
+track_a:
+  enabled: true
+  capital: 200000               # Rs 2,00,000 of the Rs 4,00,000 allocation
+  risk_per_trade_pct: 2.0       # -> Rs 4,000 max risk per trade
+  max_outlay_per_trade: 15000   # hard cap on premium paid
+  min_delta: 0.50
+  max_delta: 0.60
+  reward_to_risk: 2.0           # 1:2 minimum
+  candle_interval_minutes: 5    # 1 or 5, per the framework
+  ema_period: 20
+  macd: [12, 26, 9]
+  ichimoku: [9, 26, 52]
+  max_trades_per_day: 4
+  reentry_cooldown_minutes: 15  # wait after an exit before re-arming the setup
+  entry_window: ["09:30", "14:45"]
+  square_off_time: "15:15"
+
+# ---------------------------------------------------------------------------
+# Track B -- Weekly Credit Decay (Iron Condor)
+# ---------------------------------------------------------------------------
+track_b:
+  enabled: true
+  capital: 200000
+  short_leg_delta: 0.15
+  delta_tolerance: 0.05
+  wing_width_points: 100
+  lots: 2
+  max_lots: 3
+  max_margin: 150000            # Rs 1.2-1.5 lakh allocation
+  min_margin_buffer: 50000      # held back as buffer
+  margin_per_lot_estimate: 60000
+  profit_target_pct: 55.0       # close at 50-60% of credit captured
+  stop_on_short_strike_touch: true
+  max_trades_per_week: 2        # "1-2 structural trades / week"
+  reentry_cooldown_minutes: 60
+  entry_days: ["MON"]
+  entry_window: ["09:30", "11:30"]
+  min_days_to_expiry: 2
+  max_days_to_expiry: 5
+
+# ---------------------------------------------------------------------------
+# Portfolio risk limits (both modes)
+# ---------------------------------------------------------------------------
+risk:
+  daily_loss_limit_pct: 4.0     # of total capital; trips the kill switch
+  max_open_positions: 6
+  kill_switch_file: data/KILL_SWITCH
+  live_max_order_value: 60000   # live only: per-order notional ceiling
+  live_max_daily_orders: 40
+
+# ---------------------------------------------------------------------------
+# Paper fill simulation -- keeps paper PnL comparable to live PnL
+# ---------------------------------------------------------------------------
+paper:
+  slippage_bps: 25.0
+  slippage_min_ticks: 1.0
+  tick_size: 0.05
+  brokerage_per_order: 20.0
+  apply_statutory_charges: true
+  reject_outside_market_hours: true
+
+# ---------------------------------------------------------------------------
+# LIVE TRADING GUARDS
+# All of these must line up before a single real order is sent:
+#   1. mode resolves to live (config / UPSTOX_TRADING_MODE / --live)
+#   2. live.enabled: true                     <- below
+#   3. UPSTOX_LIVE_CONFIRM matches confirmation_phrase
+#   4. UPSTOX_API_KEY + UPSTOX_API_SECRET present
+#   5. an interactive "LIVE" typed at the prompt (or --yes)
+# ---------------------------------------------------------------------------
+live:
+  enabled: false
+  confirmation_phrase: "I UNDERSTAND THIS TRADES REAL MONEY"
+  max_capital: 400000           # refuse to arm live above this total capital
+  require_market_hours: true
+  dry_run: false                # true = live code path, orders logged not sent
+
+journal_dir: data/journal
+state_dir: data/state

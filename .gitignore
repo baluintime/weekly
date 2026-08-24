@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+data/upstox_token.json
+data/state/
+data/journal/*.csv
+data/logs/
+data/KILL_SWITCH
+.pytest_cache/
