@@ -115,7 +115,10 @@ class TrackBConfig:
     stop_on_short_strike_touch: bool = True
     max_trades_per_week: int = 2
     reentry_cooldown_minutes: int = 60
-    entry_days: tuple[str, ...] = ("MON",)
+    # Empty = any day inside the days-to-expiry window, which follows the
+    # exchange's real expiry calendar. Naming weekdays here pins the rule and
+    # will silently stop the track when NSE moves expiry.
+    entry_days: tuple[str, ...] = ()
     entry_window: tuple[str, str] = ("09:30", "11:30")
     min_days_to_expiry: int = 2
     max_days_to_expiry: int = 5
@@ -160,7 +163,8 @@ class Config:
     instrument_key: str = "NSE_INDEX|Nifty 50"
     underlying_symbol: str = "NIFTY"
     exchange: str = "NSE_FO"
-    lot_size: int = 75
+    lot_size: int = 65                     # fallback only; the live value is
+                                           # read from the contract master
     product: str = "I"                     # I = intraday, D = delivery/carry-forward
     upstox: UpstoxCredentials = field(default_factory=UpstoxCredentials)
     track_a: TrackAConfig = field(default_factory=TrackAConfig)

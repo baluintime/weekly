@@ -114,6 +114,22 @@
     </section>
   </div>
 
+  <!-- ---------------------------------------------------------- contract -->
+  <p class="section-title">Live contract — read from the exchange</p>
+  <section class="card">
+    <header>
+      <h2 id="contractHeadline">Loading contract master…</h2>
+      <span id="contractSource" class="mono" style="color:var(--muted)"></span>
+    </header>
+    <div id="contractFacts" class="tiles" style="margin-bottom:.875rem"></div>
+    <div class="scroll">
+      <table id="expiryTable">
+        <thead><tr><th>Expiry</th><th>Day</th><th class="num">Days out</th><th class="num">Lot size</th><th>Track B window</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
   <!-- ---------------------------------------------------------- overview -->
   <p class="section-title">Session</p>
   <div id="tiles" class="tiles"></div>

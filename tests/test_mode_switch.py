@@ -9,6 +9,8 @@ from nifty_options.brokers.base import OrderRequest, OrderStatus, Side
 from nifty_options.config import Config, ConfigError, LiveTradingBlocked, TradingMode
 from nifty_options.upstox.auth import Token, save_token
 
+from .conftest import NIFTY_LOT_SIZE
+
 
 def arm_live(config: Config, monkeypatch) -> None:
     """Satisfy every live guard so the switch is allowed to flip."""
@@ -142,7 +144,7 @@ def order(**overrides) -> OrderRequest:
         instrument_key="NSE_FO|C24300",
         symbol="NIFTY 24300 CE",
         side=Side.BUY,
-        quantity=75,
+        quantity=NIFTY_LOT_SIZE,
         price=100.0,
         strategy="track_a_intraday_debit",
     )
@@ -184,13 +186,13 @@ def test_non_fo_instrument_is_refused(live_broker, fake_client):
 
 
 def test_odd_lot_quantity_is_refused(live_broker, fake_client):
-    result = live_broker.place_order(order(quantity=40))
+    result = live_broker.place_order(order(quantity=NIFTY_LOT_SIZE - 1))
     assert result.status is OrderStatus.REJECTED
     assert "lot size" in result.message
 
 
 def test_order_value_ceiling_is_enforced(live_broker, fake_client):
-    result = live_broker.place_order(order(quantity=75 * 20, price=500.0))
+    result = live_broker.place_order(order(quantity=NIFTY_LOT_SIZE * 20, price=500.0))
     assert result.status is OrderStatus.REJECTED
     assert "live_max_order_value" in result.message
     assert fake_client.placed == []

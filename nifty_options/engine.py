@@ -26,12 +26,13 @@ from .strategies.base import Leg, MarketContext, Strategy, Trade, TradePlan
 from .strategies.track_a import TrackAIntradayMomentum
 from .strategies.track_b import TrackBWeeklyCondor
 from .upstox.client import UpstoxAPIError, UpstoxClient
-from .upstox.instruments import (
-    OptionQuote,
-    fetch_chain,
-    list_expiries,
-    nearest_weekly_expiry,
+from .upstox.contracts import (
+    ContractSpec,
+    ExpiryInfo,
+    fallback_spec,
+    fetch_spec,
 )
+from .upstox.instruments import OptionQuote, fetch_chain, nearest_weekly_expiry
 
 LOG = logging.getLogger(__name__)
 
@@ -63,6 +64,9 @@ class Engine:
         self.last_block_reason: str = ""
         self.state_file = config.state_dir / f"open_trades_{config.mode.value}.json"
         self._expiry_cache: tuple[date, str] | None = None
+        self.spec: ContractSpec | None = None
+        self.expiries: list[ExpiryInfo] = []
+        self._spec_day: date | None = None
         self._chain_cache: tuple[float, list[OptionQuote]] | None = None
         self._load_state()
         self._load_recent_closed()
@@ -195,27 +199,76 @@ class Engine:
                 LOG.warning("Could not refresh prices for open legs: %s", exc)
 
         return MarketContext(
-            now=now, spot=spot, candles=candles, chain=chain, expiry=expiry, prices=prices
+            now=now, spot=spot, candles=candles, chain=chain, expiry=expiry,
+            prices=prices, expiries=list(self.expiries), spec=self.spec,
         )
 
     def current_expiry(self, today: date) -> str:
-        if self._expiry_cache and self._expiry_cache[0] == today:
-            return self._expiry_cache[1]
-        assert self.client is not None
-        try:
-            expiries = list_expiries(self.client, self.config.instrument_key)
-        except UpstoxAPIError as exc:
-            LOG.error("Expiry lookup failed: %s", exc)
-            return ""
-        expiry = nearest_weekly_expiry(
-            expiries,
-            today,
-            min_days=0,
-            max_days=max(self.config.track_b.max_days_to_expiry, 7),
-        ) or ""
-        self._expiry_cache = (today, expiry)
-        LOG.info("Trading expiry: %s", expiry or "none found")
-        return expiry
+        spec = self.refresh_spec(today)
+        return spec.expiry if spec else ""
+
+    def refresh_spec(self, today: date) -> ContractSpec | None:
+        """Re-read lot size, tick size, strikes and expiries from the exchange.
+
+        Done once per session day. NSE changes these -- the Nifty lot has been
+        75, 50, 25 and 65, and weekly expiry has moved between Thursday and
+        Tuesday -- so nothing here is taken from config unless the API fails.
+        """
+        if self.spec is not None and self._spec_day == today:
+            return self.spec
+        if self.client is None:
+            return self.spec
+
+        spec, expiries = fetch_spec(
+            self.client, self.config.instrument_key, self.config.underlying_symbol,
+            today=today,
+        )
+        if spec is None:
+            if self.spec is None:
+                LOG.error(
+                    "Contract master unavailable; falling back to config values."
+                )
+                self.spec = fallback_spec(
+                    self.config.underlying_symbol, "",
+                    self.config.lot_size, self.config.paper.tick_size,
+                )
+            return self.spec
+
+        # Track A wants the nearest expiry for gamma; Track B applies its own
+        # days-to-expiry window on top of the calendar below.
+        nearest = nearest_weekly_expiry(
+            [e.expiry for e in expiries], today, min_days=0, max_days=14
+        )
+        if nearest and nearest != spec.expiry:
+            refreshed, _ = fetch_spec(
+                self.client, self.config.instrument_key,
+                self.config.underlying_symbol, expiry=nearest, today=today,
+            )
+            spec = refreshed or spec
+
+        self._apply_spec(spec)
+        self.spec = spec
+        self.expiries = expiries
+        self._spec_day = today
+        self._chain_cache = None
+        return spec
+
+    def _apply_spec(self, spec: ContractSpec) -> None:
+        """Push exchange values into the config every component reads from."""
+        if spec.lot_size and spec.lot_size != self.config.lot_size:
+            LOG.warning(
+                "Lot size changed: config had %d, the exchange lists %d for %s. "
+                "Using %d.",
+                self.config.lot_size, spec.lot_size, spec.expiry, spec.lot_size,
+            )
+            self.config.lot_size = spec.lot_size
+        if spec.tick_size and spec.tick_size != self.config.paper.tick_size:
+            LOG.info(
+                "Tick size set from the exchange: %.2f (was %.2f).",
+                spec.tick_size, self.config.paper.tick_size,
+            )
+            self.config.paper.tick_size = spec.tick_size
+        LOG.info("Contract spec: %s", spec.describe())
 
     def current_chain(self, expiry: str, spot: float) -> list[OptionQuote]:
         """Refetch the chain when spot has moved by more than half a strike."""

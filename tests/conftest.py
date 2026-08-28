@@ -79,14 +79,66 @@ def build_candles(
     return list(reversed(rows))
 
 
+NIFTY_LOT_SIZE = 65          # NSE's current Nifty lot; the fake serves it live
+EXPIRY_WEEKDAY = 1           # Tuesday, as NSE currently lists Nifty weeklies
+
+
 def this_weeks_monday(today: date | None = None) -> date:
     today = today or date.today()
     return today - timedelta(days=today.weekday())
 
 
+def expiry_calendar(today: date | None = None, count: int = 4) -> list[str]:
+    """The next `count` weekly expiries, on the exchange's current weekday."""
+    today = today or date.today()
+    ahead = (EXPIRY_WEEKDAY - today.weekday()) % 7 or 7
+    first = today + timedelta(days=ahead)
+    return [(first + timedelta(days=7 * i)).isoformat() for i in range(count)]
+
+
 def this_weeks_expiry(today: date | None = None) -> str:
-    """Thursday of the current week -- the usual Nifty weekly expiry."""
-    return (this_weeks_monday(today) + timedelta(days=3)).isoformat()
+    return expiry_calendar(today)[0]
+
+
+def condor_entry_day(today: date | None = None) -> date:
+    """A day sitting inside the 2-5 day window before the next expiry.
+
+    With a Tuesday expiry that is Thursday or Friday -- the equivalent of the
+    document's "Monday" when expiry was Thursday.
+    """
+    expiry = date.fromisoformat(expiry_calendar(today)[0])
+    return expiry - timedelta(days=5)
+
+
+def build_contracts(
+    expiries: list[str], spot: float = 24_000.0, lot_size: int = NIFTY_LOT_SIZE
+) -> list[dict]:
+    """Rows shaped like Upstox `/v2/option/contract`, including lot size."""
+    rows = []
+    for expiry in expiries:
+        for offset in range(-1000, 1050, 50):
+            strike = spot + offset
+            for option_type in ("CE", "PE"):
+                rows.append(
+                    {
+                        "name": "NIFTY",
+                        "segment": "NSE_FO",
+                        "exchange": "NSE",
+                        "expiry": expiry,
+                        "weekly": True,
+                        "instrument_key": f"NSE_FO|{option_type[0]}{int(strike)}",
+                        "trading_symbol": f"NIFTY {int(strike)} {option_type}",
+                        "tick_size": 5.0,           # paise, as the API reports it
+                        "lot_size": lot_size,
+                        "instrument_type": option_type,
+                        "freeze_quantity": 1800.0,
+                        "underlying_key": "NSE_INDEX|Nifty 50",
+                        "underlying_symbol": "NIFTY",
+                        "strike_price": strike,
+                        "minimum_lot": lot_size,
+                    }
+                )
+    return rows
 
 
 def build_chain(spot: float = 24_000.0, expiry: str = "2026-08-27") -> list[dict]:
@@ -134,11 +186,20 @@ class FakeUpstoxClient:
         spot: float = 24_000.0,
         breakout: bool = False,
         expiry: str | None = None,
+        lot_size: int = NIFTY_LOT_SIZE,
+        expiries: list[str] | None = None,
     ):
         self.spot = spot
         self.breakout = breakout
-        self.expiry = expiry or this_weeks_expiry()
-        self.chain = build_chain(spot, expiry)
+        self.lot_size = lot_size
+        if expiries is not None:
+            self.expiries = sorted(expiries)
+        elif expiry:
+            self.expiries = sorted(dict.fromkeys([expiry] + expiry_calendar()))
+        else:
+            self.expiries = expiry_calendar()
+        self.expiry = expiry or self.expiries[0]
+        self.chain = build_chain(spot, self.expiry)
         self.placed: list[dict] = []
         self.prices: dict[str, float] = {}
         for row in self.chain:
@@ -162,10 +223,15 @@ class FakeUpstoxClient:
         return list(reversed(rows))          # mirror UpstoxClient's reversal
 
     def get_option_chain(self, instrument_key, expiry_date):
+        if expiry_date and expiry_date != self.expiry:
+            return build_chain(self.spot, expiry_date)
         return self.chain
 
     def get_option_contracts(self, instrument_key, expiry_date=None):
-        return [{"expiry": self.expiry}]
+        rows = build_contracts(self.expiries, self.spot, self.lot_size)
+        if expiry_date:
+            rows = [r for r in rows if r["expiry"] == expiry_date]
+        return rows
 
     def get_charges_margin(self, instruments):
         return {"required_margin": 58_000.0}

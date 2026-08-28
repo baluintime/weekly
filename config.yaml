@@ -13,7 +13,11 @@ mode: paper
 instrument_key: "NSE_INDEX|Nifty 50"
 underlying_symbol: NIFTY
 exchange: NSE_FO
-lot_size: 75          # NSE Nifty index-option lot size; verify before a live run
+# Contract facts below are FALLBACKS only. On every session day the engine
+# reads the live lot size, tick size, strike interval, freeze quantity and the
+# whole expiry calendar from the Upstox contract master, and logs any change.
+# NSE has moved all of these before, so nothing here is trusted while online.
+lot_size: 65
 product: I            # I = intraday (MIS), D = carry-forward (NRML)
 timezone: Asia/Kolkata
 log_level: INFO
@@ -63,7 +67,11 @@ track_b:
   stop_on_short_strike_touch: true
   max_trades_per_week: 2        # "1-2 structural trades / week"
   reentry_cooldown_minutes: 60
-  entry_days: ["MON"]
+  # Leave empty so entry follows the exchange's expiry calendar via the
+  # days-to-expiry window below. The document's "deploy on Monday" assumed a
+  # Thursday expiry (3 days out); with NSE's Tuesday expiry the equivalent day
+  # is Thursday or Friday, and hardcoding MON would never trade.
+  entry_days: []
   entry_window: ["09:30", "11:30"]
   min_days_to_expiry: 2
   max_days_to_expiry: 5
@@ -84,7 +92,7 @@ risk:
 paper:
   slippage_bps: 25.0
   slippage_min_ticks: 1.0
-  tick_size: 0.05
+  tick_size: 0.05               # fallback; overridden by the contract master
   brokerage_per_order: 20.0
   apply_statutory_charges: true
   reject_outside_market_hours: true

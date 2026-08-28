@@ -19,6 +19,7 @@ from typing import Sequence
 from ..brokers.base import Side
 from ..config import Config
 from ..indicators import Candle, ichimoku, ema, macd
+from ..upstox.contracts import expiry_in_window
 from ..upstox.instruments import (
     OptionQuote,
     days_to_expiry,
@@ -71,18 +72,11 @@ class TrackBWeeklyCondor(Strategy):
             start, end = self.params.entry_window
             return self._skip(f"outside the entry window ({start}-{end})")
 
-        if not ctx.expiry:
-            return self._skip("no weekly expiry found in the option contracts")
-        dte = days_to_expiry(ctx.expiry, ctx.today)
-        if not (self.params.min_days_to_expiry <= dte <= self.params.max_days_to_expiry):
-            return self._skip(
-                f"expiry {ctx.expiry} is {dte} days out, outside the "
-                f"{self.params.min_days_to_expiry}-{self.params.max_days_to_expiry} day window"
-            )
+        expiry = self.select_expiry(ctx)
+        if not expiry:
+            return self._skip(self.last_skip_reason or "no expiry in the holding window")
 
-        allowed_days = {WEEKDAYS[d.upper()] for d in self.params.entry_days if d.upper() in WEEKDAYS}
-        is_entry_day = ctx.now.weekday() in allowed_days
-        if not (is_entry_day or self.move_exhausted(ctx)):
+        if not self.is_entry_day(ctx):
             days = "/".join(self.params.entry_days)
             return self._skip(
                 f"{ctx.now:%A} is not an entry day ({days}) and no exhausted move "
@@ -90,6 +84,56 @@ class TrackBWeeklyCondor(Strategy):
             )
 
         return self.build_condor(ctx)
+
+    def select_expiry(self, ctx: MarketContext) -> str:
+        """The listed expiry that gives the framework's 2-5 day hold.
+
+        Uses the exchange's real calendar when the engine supplied one, so a
+        Tuesday, Thursday or holiday-shifted expiry all work unchanged.
+        """
+        low, high = self.params.min_days_to_expiry, self.params.max_days_to_expiry
+        if ctx.expiries:
+            chosen = expiry_in_window(ctx.expiries, ctx.today, low, high)
+            if chosen is not None:
+                return chosen.expiry
+            listed = ", ".join(
+                f"{e.expiry} ({e.weekday}, {e.days_to_expiry(ctx.today)}d)"
+                for e in ctx.expiries[:3]
+            )
+            self._skip(
+                f"no listed expiry {low}-{high} days out; nearest are {listed}"
+            )
+            return ""
+
+        if not ctx.expiry:
+            self._skip("no expiry found in the option contracts")
+            return ""
+        dte = days_to_expiry(ctx.expiry, ctx.today)
+        if not (low <= dte <= high):
+            self._skip(
+                f"expiry {ctx.expiry} is {dte} days out, outside the {low}-{high} day window"
+            )
+            return ""
+        return ctx.expiry
+
+    def is_entry_day(self, ctx: MarketContext) -> bool:
+        """Whether today may open a condor.
+
+        With `entry_days` empty (the default) any day inside the
+        days-to-expiry window qualifies, so the rule follows the exchange's
+        actual expiry calendar. The framework's "deployed on Monday" assumed a
+        Thursday expiry; when NSE moves expiry to Tuesday, Monday is 1 day out
+        and the equivalent entry day becomes Thursday or Friday. Pinning a
+        weekday would silently stop the track from ever trading.
+        """
+        if self.params.entry_days:
+            allowed = {
+                WEEKDAYS[d.upper()] for d in self.params.entry_days if d.upper() in WEEKDAYS
+            }
+            if ctx.now.weekday() in allowed:
+                return True
+            return self.move_exhausted(ctx)
+        return True
 
     def move_exhausted(self, ctx: MarketContext) -> bool:
         """Alternative entry: a directional push stalling at cloud support/resistance."""

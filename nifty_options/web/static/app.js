@@ -119,6 +119,57 @@ function renderEngine() {
   $("tickBtn").disabled = running;
 }
 
+/** Lot size, tick, strikes and the expiry calendar as the exchange lists them.
+ *  Shown prominently because NSE changes all of these. */
+function renderContract() {
+  const c = state.contract || {};
+  const head = $("contractHeadline");
+  const source = $("contractSource");
+
+  if (!c.known) {
+    head.textContent = "Contract master not fetched yet";
+    source.textContent = c.source || "";
+    $("contractFacts").innerHTML =
+      `<div class="tile"><div class="k">Lot size (fallback)</div>
+        <div class="v">${c.lot_size ?? "—"}</div>
+        <div class="s">connect Upstox to read the live value</div></div>`;
+    $("expiryTable").querySelector("tbody").innerHTML = "";
+    return;
+  }
+
+  head.textContent = `${c.underlying} · ${c.expiry} (${c.expiry_weekday})`;
+  source.textContent = c.from_exchange
+    ? `from the exchange · fetched ${c.fetched_on}`
+    : `⚠ ${c.source} — verify before trading live`;
+  source.style.color = c.from_exchange ? "var(--muted)" : "var(--critical)";
+
+  const facts = [
+    { k: "Lot size", v: c.lot_size, s: "shares per lot" },
+    { k: "Days to expiry", v: c.dte, s: `expires ${c.expiry_weekday}` },
+    { k: "Tick size", v: "₹" + Number(c.tick_size).toFixed(2), s: "minimum price step" },
+    { k: "Strike interval", v: Number(c.strike_interval).toFixed(0), s: "points between strikes" },
+    { k: "Freeze quantity", v: Number(c.freeze_quantity).toLocaleString("en-IN"),
+      s: `max ${c.max_lots_per_order} lots per order` },
+  ];
+  $("contractFacts").innerHTML = facts
+    .map((f) => `<div class="tile"><div class="k">${f.k}</div>
+      <div class="v">${f.v ?? "—"}</div><div class="s">${f.s}</div></div>`)
+    .join("");
+
+  $("expiryTable").querySelector("tbody").innerHTML = (c.expiries || [])
+    .map((e) => {
+      const inWindow = e.dte >= 2 && e.dte <= 5;
+      return `<tr>
+        <td>${escapeHtml(e.expiry)}${e.expiry === c.expiry ? " ·<strong> trading</strong>" : ""}</td>
+        <td>${escapeHtml(e.weekday)}</td>
+        <td class="num">${e.dte}</td>
+        <td class="num">${e.lot_size || "—"}</td>
+        <td>${inWindow ? '<span class="tag b">in window</span>' : '<span style="color:var(--muted)">—</span>'}</td>
+      </tr>`;
+    })
+    .join("");
+}
+
 function renderTiles() {
   const broker = state.broker || {};
   const risk = state.risk || {};
@@ -435,6 +486,7 @@ async function refresh() {
   renderConnection();
   renderMode();
   renderEngine();
+  renderContract();
   renderTiles();
   renderWaiting();
   renderComparison();

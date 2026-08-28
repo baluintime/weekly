@@ -27,6 +27,37 @@ python -m nifty_options dashboard      # everything below is driven from here
 
 ---
 
+## Contract facts come from the exchange
+
+Lot size, tick size, strike interval, freeze quantity and the whole expiry
+calendar are read from the Upstox contract master on every session day — never
+assumed in code. NSE changes all of them: the Nifty lot has been 75, 50, 25 and
+65, and weekly expiry has moved between Thursday and Tuesday. Either change,
+silently applied, would mis-size every order or stop a track trading entirely.
+
+![Live contract panel](docs/contract-spec.png)
+
+The values in `config.yaml` are **fallbacks**, used only when the API is
+unreachable, and using one is logged loudly and flagged red in the page. When
+the live lot size differs from the configured one, the engine warns and uses
+the exchange's:
+
+```
+WARNING  Lot size changed: config had 75, the exchange lists 65 for 2026-09-01. Using 65.
+INFO     Contract spec: NIFTY 2026-09-01 (TUE) | lot 65 | tick 0.05 | strikes every 50 | freeze 1800 | exchange
+```
+
+**Track B follows the calendar, not a weekday.** The document says "deploy on
+Monday", which assumed a Thursday expiry — 3 days of theta. Under a Tuesday
+expiry, Monday is 1 day out and that rule would never fire. `entry_days` is
+empty by default, so entry is driven by the 2–5 day window against the real
+listed expiries; with Tuesday expiry that lands on Thursday or Friday by
+itself. Naming weekdays there still works, but re-pins the rule.
+
+Tick size deserves a note: Upstox reports F&O ticks in paise (`5.0` meaning
+₹0.05), so it is normalised on the way in — a raw read would put every limit
+order at an invalid price.
+
 ## The console
 
 `python -m nifty_options dashboard` serves the page above on
@@ -235,7 +266,8 @@ nifty_options/
   upstox/
     auth.py            OAuth, browser login capture, daily token handling
     client.py          REST wrapper (v2 + v3)
-    instruments.py     expiries + delta-based strike selection
+    contracts.py       live lot size, tick, strikes, expiry calendar
+    instruments.py     delta-based strike selection
   web/
     server.py          loopback HTTP server + OAuth callback route
     controller.py      engine lifecycle, mode switch, read models
@@ -244,7 +276,7 @@ nifty_options/
 ```
 
 ```bash
-python -m pytest tests/ -q      # 154 tests, no network or credentials needed
+python -m pytest tests/ -q      # 184 tests, no network or credentials needed
 ```
 
 ---
@@ -261,8 +293,14 @@ conservatively and all configurable:
 2. **Condor margin.** The document's ₹1.2–1.5 lakh for 2–3 lots is SPAN+exposure
    margin, not the wing-width max loss. Sizing asks Upstox `/charges/margin`
    for a real quote and falls back to `margin_per_lot_estimate` (₹60,000).
-3. **Lot size.** Set to 75 in `config.yaml`. NSE revises this — verify before a
-   live run.
+3. **Contract facts.** Lot size, tick size, strike interval and expiries are
+   fetched from the exchange each session day (see above); `config.yaml` holds
+   fallbacks only.
+4. **Track B's entry day.** The document's "deploy on Monday" assumed a Thursday
+   expiry (3 days of theta). NSE now lists Nifty weeklies on Tuesday, making
+   Monday 1 day out and that rule dead. Entry is derived from the 2–5 day
+   window against the live calendar instead, which preserves the intent under
+   any expiry weekday.
 
 Two guards were added beyond the document, because paper testing surfaced the
 need: a Track A re-entry cooldown (the breakout candles are still in the window

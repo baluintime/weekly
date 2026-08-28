@@ -29,6 +29,13 @@ class MarketContext:
     chain: list[OptionQuote] = field(default_factory=list)
     expiry: str = ""
     prices: dict[str, float] = field(default_factory=dict)
+    # Live contract facts, straight from the exchange (see upstox/contracts.py).
+    expiries: list = field(default_factory=list)
+    spec: object = None
+
+    @property
+    def lot_size(self) -> int:
+        return int(getattr(self.spec, "lot_size", 0) or 0)
 
     @property
     def today(self) -> date:

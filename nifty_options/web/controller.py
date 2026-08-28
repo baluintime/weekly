@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections import deque
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from ..brokers import build_broker, build_client, describe_mode
@@ -323,6 +323,7 @@ class DashboardController:
                 "live_max_order_value": config.risk.live_max_order_value,
                 "lot_size": config.lot_size,
             },
+            "contract": self.contract_view(engine),
             "tracks": {
                 "a": {"enabled": config.track_a.enabled, "name": "Intraday Debit Momentum"},
                 "b": {"enabled": config.track_b.enabled, "name": "Weekly Credit Decay"},
@@ -330,6 +331,43 @@ class DashboardController:
             "broker": summary,
             "risk": risk,
             "positions": positions,
+        }
+
+    def contract_view(self, engine) -> dict[str, Any]:
+        """What the exchange currently lists -- lot, tick, strikes, expiries."""
+        spec = getattr(engine, "spec", None) if engine is not None else None
+        if spec is None:
+            return {
+                "known": False,
+                "lot_size": self.config.lot_size,
+                "source": "config fallback (not yet fetched)",
+            }
+        today = date.today()
+        expiries = [
+            {
+                "expiry": e.expiry,
+                "weekday": e.weekday,
+                "dte": e.days_to_expiry(today),
+                "lot_size": e.lot_size,
+                "weekly": e.weekly,
+            }
+            for e in getattr(engine, "expiries", [])[:6]
+        ]
+        return {
+            "known": True,
+            "underlying": spec.underlying,
+            "expiry": spec.expiry,
+            "expiry_weekday": spec.expiry_weekday,
+            "dte": spec.days_to_expiry(today),
+            "lot_size": spec.lot_size,
+            "tick_size": spec.tick_size,
+            "strike_interval": spec.strike_interval,
+            "freeze_quantity": spec.freeze_quantity,
+            "max_lots_per_order": spec.max_lots_per_order(),
+            "source": spec.source,
+            "from_exchange": spec.from_exchange,
+            "fetched_on": spec.fetched_on,
+            "expiries": expiries,
         }
 
     def guards(self) -> list[dict[str, Any]]:
