@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en" data-key="__SESSION_KEY__">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Nifty 50 Options Console</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>&#128200;</text></svg>">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header>
+  <div class="bar">
+    <div class="brand">
+      <h1>Nifty 50 Options</h1>
+      <span>dual-track execution console</span>
+    </div>
+
+    <span id="modePill" class="mode-pill paper"><span class="dot"></span><span id="modeText">paper</span></span>
+    <span id="enginePill" class="mode-pill" style="background:var(--surface-2);color:var(--text-secondary);border-color:var(--border)">
+      <span class="dot" id="engineDot"></span><span id="engineText">idle</span>
+    </span>
+
+    <div class="row">
+      <button id="tickBtn" class="ghost" title="Run a single evaluation now">Evaluate once</button>
+      <button id="runBtn" class="primary">Start engine</button>
+      <button id="panicBtn" class="danger" title="Kill switch and square off everything">Panic</button>
+      <button id="themeBtn" class="ghost" aria-label="Toggle colour theme">&#9681;</button>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <div id="banner"></div>
+
+  <!-- ------------------------------------------------ connection + mode -->
+  <p class="section-title">Connection &amp; trading mode</p>
+  <div class="grid cols-2">
+
+    <section class="card" aria-labelledby="connTitle">
+      <header>
+        <h2 id="connTitle">Upstox connection</h2>
+        <span id="connState" class="mono" style="color:var(--muted)"></span>
+      </header>
+
+      <div id="credForm" class="grid" style="gap:.75rem">
+        <p class="notice info">
+          Enter your Upstox app credentials once. They are written to a private
+          <span class="mono">.env</span> file — you never paste them again, and the
+          daily token is captured automatically in the browser.
+        </p>
+        <div>
+          <label for="apiKey">API key</label>
+          <input id="apiKey" type="text" autocomplete="off" spellcheck="false" placeholder="from account.upstox.com/developer/apps">
+        </div>
+        <div>
+          <label for="apiSecret">API secret</label>
+          <input id="apiSecret" type="password" autocomplete="off" spellcheck="false">
+        </div>
+        <div>
+          <label for="redirectUri">Redirect URI (must match your Upstox app exactly)</label>
+          <input id="redirectUri" type="text" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="row">
+          <button id="saveCredsBtn" class="primary">Save credentials</button>
+          <span class="mono" style="color:var(--muted)">stored with 0600 permissions</span>
+        </div>
+      </div>
+
+      <div id="connected" class="hidden">
+        <dl>
+          <div class="spread"><dt>API key</dt><dd id="maskedKey" class="mono">—</dd></div>
+          <div class="spread"><dt>Token source</dt><dd id="tokenSource">—</dd></div>
+          <div class="spread"><dt>Valid until</dt><dd id="tokenExpiry" class="mono">—</dd></div>
+        </dl>
+        <div class="row" style="margin-top:.875rem">
+          <button id="reconnectBtn">Reconnect Upstox</button>
+          <button id="editCredsBtn" class="ghost">Change credentials</button>
+        </div>
+      </div>
+
+      <div id="connectPrompt" class="hidden" style="margin-top:.875rem">
+        <a id="connectBtn" href="/auth/login" target="_blank" rel="noopener">
+          <button class="primary">Connect Upstox &#8599;</button>
+        </a>
+        <p class="mono" style="color:var(--muted);margin:.5rem 0 0">
+          Opens the Upstox consent screen. The redirect lands back here and the token is stored for you.
+        </p>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="modeTitle">
+      <header>
+        <h2 id="modeTitle">Paper &#8596; actual trading</h2>
+        <div class="segmented" role="group" aria-label="Trading mode">
+          <button data-mode="paper" aria-pressed="true">Paper</button>
+          <button data-mode="live" aria-pressed="false">Live</button>
+        </div>
+      </header>
+
+      <p id="modeDescription" class="notice info" style="margin-bottom:.875rem"></p>
+
+      <h3 style="margin-bottom:.5rem">Live-trading checklist</h3>
+      <ul id="guards" class="checklist"></ul>
+
+      <div id="confirmBox" class="hidden" style="margin-top:.875rem">
+        <label for="confirmInput">Type the confirmation phrase to arm real orders</label>
+        <input id="confirmInput" type="text" autocomplete="off" spellcheck="false" placeholder="">
+        <div class="row" style="margin-top:.625rem">
+          <button id="armBtn" class="danger">Switch to live trading</button>
+          <button id="cancelArmBtn" class="ghost">Cancel</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ---------------------------------------------------------- overview -->
+  <p class="section-title">Session</p>
+  <div id="tiles" class="tiles"></div>
+
+  <!-- ------------------------------------------------------------ charts -->
+  <p class="section-title">Performance</p>
+  <div class="grid cols-2">
+    <section class="card">
+      <div class="chart-head">
+        <div>
+          <h2>Cumulative realised P&amp;L</h2>
+          <p class="mono" style="color:var(--muted);margin:.25rem 0 0" id="equityMeta"></p>
+        </div>
+        <div class="legend">
+          <span><i class="swatch" style="background:var(--series-1)"></i>Track A</span>
+          <span><i class="swatch" style="background:var(--series-2)"></i>Track B</span>
+        </div>
+      </div>
+      <figure>
+        <div id="equityChart"></div>
+        <figcaption>Realised P&amp;L after charges, by closed trade.</figcaption>
+      </figure>
+    </section>
+
+    <section class="card">
+      <div class="chart-head">
+        <div>
+          <h2>Per-trade result</h2>
+          <p class="mono" style="color:var(--muted);margin:.25rem 0 0">wins above the baseline, losses below</p>
+        </div>
+      </div>
+      <figure>
+        <div id="tradesChart"></div>
+        <figcaption>Each column is one closed trade, in sequence.</figcaption>
+      </figure>
+    </section>
+  </div>
+
+  <!-- -------------------------------------------------------- comparison -->
+  <p class="section-title">Track comparison</p>
+  <section class="card scroll">
+    <table id="comparison">
+      <thead><tr><th>Metric</th><th class="num">Track A · intraday debit</th><th class="num">Track B · weekly condor</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <!-- --------------------------------------------------------- positions -->
+  <p class="section-title">Open positions</p>
+  <section class="card scroll">
+    <table id="positions">
+      <thead><tr>
+        <th>Track</th><th>Structure</th><th class="num">Lots</th><th class="num">Entry</th>
+        <th class="num">Stop</th><th class="num">Target</th><th>Expiry</th><th>Opened</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+    <p id="positionsEmpty" class="empty">No open positions.</p>
+  </section>
+
+  <!-- ----------------------------------------------------------- journal -->
+  <p class="section-title">Trade journal</p>
+  <section class="card">
+    <header>
+      <h2>Tracking sheet</h2>
+      <span id="journalPath" class="mono" style="color:var(--muted)"></span>
+    </header>
+    <div class="scroll">
+      <table id="journal">
+        <thead><tr>
+          <th>Date</th><th>Track</th><th>Strategy / legs</th>
+          <th class="num">Entry</th><th class="num">Exit</th><th class="num">Net points</th>
+          <th class="num">Realised P&amp;L</th><th>Exit reason</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <p id="journalEmpty" class="empty">No trades recorded yet.</p>
+  </section>
+
+  <!-- -------------------------------------------------------------- logs -->
+  <p class="section-title">Activity</p>
+  <section class="card">
+    <header>
+      <h2>Engine log</h2>
+      <button id="clearLogs" class="ghost">Clear</button>
+    </header>
+    <div id="logs" class="logs"></div>
+  </section>
+</main>
+
+<div id="tip" class="tip" role="status" aria-live="polite"></div>
+<div id="toast" class="toast"></div>
+<script src="/app.js"></script>
+</body>
+</html>

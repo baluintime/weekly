@@ -9,10 +9,15 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import secrets
+import time as time_module
+import webbrowser
 from dataclasses import asdict, dataclass
 from datetime import datetime, time, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import requests
 
@@ -104,8 +109,6 @@ def save_token(path: Path, token: Token) -> None:
 
 def load_token(config: Config) -> Token | None:
     """Return a usable token from the environment or the token file."""
-    import os
-
     env_token = os.getenv("UPSTOX_ACCESS_TOKEN", "").strip()
     if env_token:
         return Token(
@@ -131,3 +134,169 @@ def require_token(config: Config) -> Token:
             "No valid Upstox access token. Run:  python -m nifty_options login"
         )
     return token
+
+
+# ---------------------------------------------------------------------- #
+# Automatic browser login -- no copy-pasting of codes or tokens
+# ---------------------------------------------------------------------- #
+SUCCESS_PAGE = """<!doctype html><meta charset="utf-8">
+<title>Upstox connected</title>
+<style>
+  :root{color-scheme:light dark}
+  body{margin:0;min-height:100vh;display:grid;place-items:center;
+       font:16px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+       background:#0b0f14;color:#e6edf3}
+  .card{max-width:30rem;padding:2.5rem;border-radius:1rem;text-align:center;
+        background:#131a22;border:1px solid #243040}
+  .tick{width:3.5rem;height:3.5rem;margin:0 auto 1.25rem;border-radius:50%;
+        display:grid;place-items:center;background:#10352a;color:#3fb950;font-size:1.75rem}
+  h1{margin:0 0 .5rem;font-size:1.25rem}
+  p{margin:0;color:#8b98a5}
+  code{background:#0b0f14;padding:.15rem .4rem;border-radius:.3rem;color:#79c0ff}
+</style>
+<div class="card">
+  <div class="tick">&#10003;</div>
+  <h1>{heading}</h1>
+  <p>{message}</p>
+</div>
+<script>setTimeout(function(){window.close()},2500)</script>
+"""
+
+
+@dataclass
+class CallbackResult:
+    code: str = ""
+    error: str = ""
+    state: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return bool(self.code) and not self.error
+
+
+class _CallbackHandler(BaseHTTPRequestHandler):
+    """Single-shot handler that captures Upstox's ?code= redirect."""
+
+    callback_path = "/callback"
+    expected_state = ""
+    result: CallbackResult | None = None
+
+    def do_GET(self) -> None:                       # noqa: N802 (stdlib API)
+        parsed = urlparse(self.path)
+        if parsed.path.rstrip("/") != self.callback_path.rstrip("/"):
+            self.send_error(404, "Not the Upstox callback path")
+            return
+
+        params = parse_qs(parsed.query)
+        result = CallbackResult(
+            code=params.get("code", [""])[0],
+            error=params.get("error_description", params.get("error", [""]))[0],
+            state=params.get("state", [""])[0],
+        )
+        if result.ok and self.expected_state and result.state != self.expected_state:
+            result = CallbackResult(error="State mismatch -- possible CSRF; login refused.")
+
+        type(self).result = result
+        if result.ok:
+            body = SUCCESS_PAGE.replace("{heading}", "Upstox connected").replace(
+                "{message}", "The access token was saved automatically. "
+                "You can close this tab and return to the dashboard."
+            )
+        else:
+            body = (
+                SUCCESS_PAGE.replace("{heading}", "Login failed")
+                .replace("{message}", result.error or "No authorization code was returned.")
+                .replace("#3fb950", "#f85149")
+                .replace("#10352a", "#3d1418")
+                .replace("&#10003;", "!")
+            )
+        encoded = body.encode()
+        self.send_response(200 if result.ok else 400)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def log_message(self, fmt: str, *args) -> None:
+        LOG.debug("callback: " + fmt, *args)
+
+
+def callback_endpoint(redirect_uri: str) -> tuple[str, int, str]:
+    """Split a redirect URI into (host, port, path) for the local listener."""
+    parsed = urlparse(redirect_uri)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    return host, port, parsed.path or "/callback"
+
+
+def run_login_flow(
+    config: Config,
+    timeout: int = 300,
+    open_browser: bool = True,
+) -> Token:
+    """Full browser OAuth with no manual steps.
+
+    Starts a one-shot listener on the app's registered redirect URI, opens the
+    Upstox consent screen, catches the ?code= redirect and exchanges it for a
+    token. Nothing is ever copied by hand.
+    """
+    host, port, path = callback_endpoint(config.upstox.redirect_uri)
+    if host not in ("127.0.0.1", "localhost", "0.0.0.0"):
+        raise ConfigError(
+            f"Automatic login needs a loopback redirect URI; got {config.upstox.redirect_uri!r}. "
+            "Register http://127.0.0.1:5000/callback on your Upstox app, or use --manual."
+        )
+
+    state = secrets.token_urlsafe(16)
+    handler = type(
+        "_BoundCallbackHandler",
+        (_CallbackHandler,),
+        {"callback_path": path, "expected_state": state, "result": None},
+    )
+
+    try:
+        server = HTTPServer((host, port), handler)
+    except OSError as exc:
+        raise ConfigError(
+            f"Could not listen on {host}:{port} for the Upstox callback ({exc}). "
+            "The dashboard may already be running -- use its Connect button instead."
+        ) from exc
+
+    server.timeout = timeout
+    url = build_login_url(config, state=state)
+    LOG.info("Waiting for the Upstox callback on %s:%s%s", host, port, path)
+
+    with server:
+        if open_browser:
+            opened = webbrowser.open(url)
+            if not opened:
+                print("Could not open a browser automatically. Visit:\n\n  " + url + "\n")
+        else:
+            print("Open this URL to authorise:\n\n  " + url + "\n")
+
+        deadline = time_module.monotonic() + timeout
+        while handler.result is None:
+            if time_module.monotonic() > deadline:
+                raise ConfigError(
+                    f"Timed out after {timeout}s waiting for the Upstox callback."
+                )
+            server.handle_request()
+
+    result = handler.result
+    if not result.ok:
+        raise ConfigError(f"Upstox login failed: {result.error or 'no code returned'}")
+
+    return exchange_code(config, result.code)
+
+
+def token_status(config: Config) -> dict[str, object]:
+    """Connection state for the dashboard -- never exposes the token itself."""
+    token = load_token(config)
+    return {
+        "connected": token is not None,
+        "user_id": token.user_id if token else "",
+        "expires_at": token.expires_at if token else "",
+        "source": "environment" if os.getenv("UPSTOX_ACCESS_TOKEN") else "token file",
+        "has_credentials": bool(config.upstox.api_key and config.upstox.api_secret),
+        "redirect_uri": config.upstox.redirect_uri,
+    }

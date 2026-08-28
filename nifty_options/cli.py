@@ -1,6 +1,8 @@
 """Command-line entry point.
 
-    python -m nifty_options login                  # one-time Upstox OAuth
+    python -m nifty_options dashboard              # web console (recommended)
+    python -m nifty_options credentials            # store the API key once
+    python -m nifty_options login                  # browser OAuth, nothing to paste
     python -m nifty_options mode                   # what will happen if I run?
     python -m nifty_options run                    # paper (default)
     python -m nifty_options run --mode live        # actual trading, if armed
@@ -23,7 +25,8 @@ from .config import Config, ConfigError, LiveTradingBlocked, TradingMode
 from .engine import Engine
 from .journal import Journal, comparison_report
 from .logging_setup import setup_logging
-from .upstox.auth import build_login_url, exchange_code, load_token
+from .credentials import mask, save_credentials
+from .upstox.auth import build_login_url, exchange_code, load_token, run_login_flow
 
 LOG = logging.getLogger("nifty_options.cli")
 
@@ -61,7 +64,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("login", help="print the Upstox login URL / exchange an auth code")
+    login = sub.add_parser("login", help="connect Upstox in the browser (no copy-paste)")
+    login.add_argument(
+        "--manual", action="store_true",
+        help="print the URL and read the code back, for headless machines",
+    )
+    login.add_argument("--no-browser", action="store_true", help="do not open a browser")
+    login.add_argument("--timeout", type=int, default=300)
+
+    creds = sub.add_parser("credentials", help="store the Upstox API key and secret in .env")
+    creds.add_argument("--api-key", default="")
+    creds.add_argument("--api-secret", default="")
+    creds.add_argument("--redirect-uri", default="")
+
+    dashboard = sub.add_parser("dashboard", help="serve the web console (default command surface)")
+    dashboard.add_argument("--host", default=None, help="bind address (default: from redirect_uri)")
+    dashboard.add_argument("--port", type=int, default=None, help="port (default: from redirect_uri)")
+    dashboard.add_argument("--no-browser", action="store_true")
     sub.add_parser("mode", help="show the effective trading mode and why")
 
     run = sub.add_parser("run", help="run the strategy engine")
@@ -112,21 +131,59 @@ def confirm_live(config: Config, skip: bool) -> bool:
 # ---------------------------------------------------------------------- #
 # commands
 # ---------------------------------------------------------------------- #
-def cmd_login(config: Config) -> int:
+def cmd_login(config: Config, args: argparse.Namespace) -> int:
+    if not (config.upstox.api_key and config.upstox.api_secret):
+        print(
+            "No Upstox API credentials found. Store them once with:\n"
+            "  python -m nifty_options credentials --api-key KEY --api-secret SECRET\n"
+            "or enter them in the dashboard (python -m nifty_options dashboard)."
+        )
+        return 2
+
     token = load_token(config)
-    if token:
+    if token and sys.stdin.isatty():
         print(f"Existing token is valid until {token.expires_at}.")
         if input("Re-authenticate anyway? [y/N]: ").strip().lower() != "y":
             return 0
-    print("\n1. Open this URL, log in, and approve access:\n")
+
+    if not args.manual:
+        # Default path: a local listener catches the redirect, so the code is
+        # never seen or pasted by a human.
+        print("Opening the Upstox consent screen; the redirect is captured here.")
+        token = run_login_flow(config, timeout=args.timeout, open_browser=not args.no_browser)
+        print(f"Connected as {token.user_id or 'user'}; token valid until {token.expires_at}.")
+        return 0
+
+    print("\nOpen this URL, approve access, then paste the ?code=... value:\n")
     print(f"   {build_login_url(config)}\n")
-    print("2. Copy the ?code=... value from the redirect URL.\n")
     code = input("Authorization code: ").strip()
     if not code:
         print("No code entered.")
         return 1
     token = exchange_code(config, code)
     print(f"Token saved to {config.upstox.token_path} (valid until {token.expires_at}).")
+    return 0
+
+
+def cmd_credentials(config: Config, args: argparse.Namespace) -> int:
+    api_key = args.api_key or input("Upstox API key: ").strip()
+    api_secret = args.api_secret
+    if not api_secret:
+        import getpass
+
+        api_secret = getpass.getpass("Upstox API secret (hidden): ").strip()
+    if not (api_key and api_secret):
+        print("Both the API key and secret are required.")
+        return 1
+    path = save_credentials(api_key, api_secret, args.redirect_uri or config.upstox.redirect_uri)
+    print(f"Saved {mask(api_key)} to {path}. Next:  python -m nifty_options login")
+    return 0
+
+
+def cmd_dashboard(config: Config, args: argparse.Namespace) -> int:
+    from .web.server import serve
+
+    serve(config, host=args.host, port=args.port, open_browser=not args.no_browser)
     return 0
 
 
@@ -237,7 +294,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.command == "login":
-            return cmd_login(config)
+            return cmd_login(config, args)
+        if args.command == "credentials":
+            return cmd_credentials(config, args)
+        if args.command == "dashboard":
+            return cmd_dashboard(config, args)
         if args.command == "mode":
             return cmd_mode(config)
         if args.command == "run":

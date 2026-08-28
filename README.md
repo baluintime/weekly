@@ -5,8 +5,16 @@ Implementation of the dual-track Nifty 50 options framework in
 running on the Upstox API.
 
 It **paper trades by default** and switches to **actual trading** through a
-single guarded switch. Both modes run the identical strategy, sizing and risk
-code — the only difference is where the orders land.
+single guarded switch — from a web console, or the CLI. Both modes run the
+identical strategy, sizing and risk code; the only difference is where the
+orders land.
+
+```bash
+pip install -r requirements.txt
+python -m nifty_options dashboard      # everything below is driven from here
+```
+
+![The console: connection, mode switch, live checklist, P&L and journal](docs/dashboard.png)
 
 | | Track A | Track B |
 |---|---|---|
@@ -19,6 +27,49 @@ code — the only difference is where the orders land.
 
 ---
 
+## The console
+
+`python -m nifty_options dashboard` serves the page above on
+`http://127.0.0.1:5000/` and opens it. Everything is driven from there:
+
+- **Connect Upstox in one click.** Paste the API key and secret *once*; they go
+  to a private `.env` (mode 0600). The daily token is captured automatically —
+  see below.
+- **Flip paper ↔ live** with a live-trading checklist that shows exactly which
+  guard is still blocking, and a typed confirmation phrase to arm real orders.
+- **Start, stop or single-step the engine**, watch positions and the trade
+  journal fill in, and hit **Panic** to engage the kill switch and flatten.
+- **Cumulative P&L and per-trade results** per track, with hover detail, in
+  light and dark themes.
+
+The page polls the same process that runs the strategies, so what you see is
+the engine's real state — there is no separate service and nothing leaves the
+machine. Because that page can arm real trading, the server binds to loopback
+only, pins the `Host` header (blocking DNS-rebinding), and requires a
+per-session key on every mutating request.
+
+## Connecting Upstox — nothing to copy or paste
+
+Upstox tokens expire daily at 03:30 IST, so this is a chore you would otherwise
+do every morning. You never handle a code or a token:
+
+```bash
+python -m nifty_options credentials     # API key + secret, stored once in .env
+python -m nifty_options login           # opens the browser, captures the redirect
+```
+
+`login` starts a one-shot listener on your app's registered redirect URI, opens
+the Upstox consent screen, catches the `?code=…` redirect, exchanges it for an
+access token and writes it to `data/upstox_token.json` (mode 0600). When the
+dashboard is running it already owns that port, so its **Connect Upstox** button
+does the same thing in-page.
+
+Register `http://127.0.0.1:5000/callback` as the redirect URI on your Upstox app
+for this to work. On a headless box, `python -m nifty_options login --manual`
+falls back to printing the URL and reading the code back.
+
+---
+
 ## The paper ↔ actual trading switch
 
 Everything routes through one factory, `nifty_options.brokers.factory.build_broker`.
@@ -28,6 +79,13 @@ It returns a `PaperBroker` or a `LiveBroker`; the engine cannot tell them apart.
 config / env / CLI  ──▶  TradingMode  ──▶  build_broker()  ──┬──▶ PaperBroker  (simulated fills)
                                               guards        └──▶ LiveBroker   (real orders)
 ```
+
+### From the console
+
+Click **Live** in the mode switch, type the confirmation phrase, and the page
+tells you which guard — if any — is still blocking. The engine must be stopped
+before the mode can change, so a running loop can never have the broker swapped
+underneath it.
 
 ### Checking what will happen before you run
 
@@ -122,12 +180,22 @@ The kill switch also trips automatically when the daily loss limit
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env          # add your Upstox API key and secret
-python -m nifty_options login # one-time OAuth; tokens expire daily at 03:30 IST
+python -m nifty_options dashboard    # enter credentials and connect in the page
+```
+
+or entirely from the terminal:
+
+```bash
+python -m nifty_options credentials --api-key KEY --api-secret SECRET
+python -m nifty_options login
+python -m nifty_options run
 ```
 
 Create an app at <https://account.upstox.com/developer/apps> and set its
-redirect URI to match `upstox.redirect_uri` in `config.yaml`.
+redirect URI to match `upstox.redirect_uri` in `config.yaml`
+(`http://127.0.0.1:5000/callback` by default). Only `requests` and `PyYAML` are
+needed — the console is served by the standard library and loads no external
+assets.
 
 ## Results and evaluation
 
@@ -165,13 +233,18 @@ nifty_options/
     track_a.py         intraday debit momentum
     track_b.py         weekly iron condor
   upstox/
-    auth.py            OAuth + daily token handling
+    auth.py            OAuth, browser login capture, daily token handling
     client.py          REST wrapper (v2 + v3)
     instruments.py     expiries + delta-based strike selection
+  web/
+    server.py          loopback HTTP server + OAuth callback route
+    controller.py      engine lifecycle, mode switch, read models
+    static/            the console (no build step, no CDN)
+  credentials.py       .env read/write, entered once
 ```
 
 ```bash
-python -m pytest tests/ -q      # 113 tests, no network or credentials needed
+python -m pytest tests/ -q      # 154 tests, no network or credentials needed
 ```
 
 ---

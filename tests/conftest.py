@@ -12,6 +12,25 @@ import pytest
 from nifty_options.config import Config
 
 
+@pytest.fixture(autouse=True)
+def isolated_environment(monkeypatch, tmp_path):
+    """Keep UPSTOX_* out of the ambient environment.
+
+    `save_credentials` deliberately exports what it writes, so without this a
+    credential test would arm a later mode-switch test and the suite would
+    depend on ordering.
+    """
+    for name in (
+        "UPSTOX_API_KEY", "UPSTOX_API_SECRET", "UPSTOX_ACCESS_TOKEN",
+        "UPSTOX_TRADING_MODE", "UPSTOX_LIVE_CONFIRM", "UPSTOX_REDIRECT_URI",
+        "UPSTOX_TOKEN_PATH", "NIFTY_CONFIG",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    # Never read or write the developer's real .env during a test run.
+    monkeypatch.setattr("nifty_options.credentials.ENV_PATH", tmp_path / ".env")
+    monkeypatch.setattr("nifty_options.config.load_env", lambda *a, **k: {})
+
+
 @pytest.fixture
 def config(tmp_path) -> Config:
     cfg = Config.load()

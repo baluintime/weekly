@@ -22,6 +22,8 @@ from typing import Any
 
 import yaml
 
+from .credentials import load_env
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = REPO_ROOT / "config.yaml"
 
@@ -180,6 +182,9 @@ class Config:
         path: str | Path | None = None,
         mode: str | TradingMode | None = None,
     ) -> "Config":
+        # `.env` is loaded before anything reads os.environ, so stored
+        # credentials behave exactly like exported ones.
+        load_env()
         path = Path(path or os.getenv("NIFTY_CONFIG", DEFAULT_CONFIG_PATH))
         raw: dict[str, Any] = {}
         if path.exists():

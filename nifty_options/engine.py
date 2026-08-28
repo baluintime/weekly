@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time as time_module
 from dataclasses import asdict
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from .brokers.base import Broker, OrderRequest, OrderResult, Side
 from .config import Config
@@ -445,7 +446,18 @@ class Engine:
         self._save_state()
         return closed
 
-    def run(self, poll_seconds: int = 60, max_ticks: int | None = None) -> None:
+    def run(
+        self,
+        poll_seconds: int = 60,
+        max_ticks: int | None = None,
+        stop_event: "threading.Event | None" = None,
+        on_tick: "Callable[[dict[str, Any]], None] | None" = None,
+    ) -> None:
+        """Poll until stopped.
+
+        `stop_event` lets the dashboard halt the loop between ticks without
+        killing the process, and `on_tick` publishes each report to the UI.
+        """
         LOG.info(
             "Starting engine | mode=%s | broker=%s | tracks=%s",
             self.config.mode.value,
@@ -454,12 +466,17 @@ class Engine:
         )
         ticks = 0
         while max_ticks is None or ticks < max_ticks:
+            if stop_event is not None and stop_event.is_set():
+                LOG.info("Stop requested -- leaving open positions untouched.")
+                break
             try:
                 report = self.tick()
                 if report.get("opened") or report.get("closed"):
                     LOG.info("Tick: %s", report)
                 else:
                     LOG.debug("Tick: %s", report)
+                if on_tick is not None:
+                    on_tick(report)
             except KeyboardInterrupt:
                 LOG.warning("Interrupted -- leaving open positions untouched.")
                 break
@@ -468,4 +485,8 @@ class Engine:
             ticks += 1
             if max_ticks is not None and ticks >= max_ticks:
                 break
-            time_module.sleep(poll_seconds)
+            if stop_event is not None:
+                if stop_event.wait(poll_seconds):
+                    break
+            else:
+                time_module.sleep(poll_seconds)
