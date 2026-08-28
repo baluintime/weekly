@@ -47,42 +47,47 @@ class TrackBWeeklyCondor(Strategy):
         self, ctx: MarketContext, open_trades: Sequence[Trade]
     ) -> TradePlan | None:
         if not self.params.enabled:
-            return None
+            return self._skip("track disabled in config")
 
         mine = [t for t in open_trades if t.track == self.track]
         if any(t.is_open for t in mine):
-            return None                       # one condor on at a time
+            return self._skip("condor already open")
 
         week = ctx.today.isocalendar()[:2]
         this_week = [t for t in mine if t.opened_at.date().isocalendar()[:2] == week]
         if len(this_week) >= self.params.max_trades_per_week:
-            LOG.debug(
-                "Track B: weekly structural-trade cap (%d) reached.",
-                self.params.max_trades_per_week,
+            return self._skip(
+                f"weekly structural-trade cap reached ({self.params.max_trades_per_week})"
             )
-            return None
 
         cooldown = self.params.reentry_cooldown_minutes
         if cooldown > 0 and any(
             t.closed_at and (ctx.now - t.closed_at).total_seconds() < cooldown * 60
             for t in this_week
         ):
-            return None
+            return self._skip(f"in re-entry cooldown ({cooldown} min after the last exit)")
 
         if not self.in_window(ctx.now, self.params.entry_window):
-            return None
+            start, end = self.params.entry_window
+            return self._skip(f"outside the entry window ({start}-{end})")
 
         if not ctx.expiry:
-            return None
+            return self._skip("no weekly expiry found in the option contracts")
         dte = days_to_expiry(ctx.expiry, ctx.today)
         if not (self.params.min_days_to_expiry <= dte <= self.params.max_days_to_expiry):
-            LOG.debug("Track B: %s is %d days out, outside the 2-5 day window.", ctx.expiry, dte)
-            return None
+            return self._skip(
+                f"expiry {ctx.expiry} is {dte} days out, outside the "
+                f"{self.params.min_days_to_expiry}-{self.params.max_days_to_expiry} day window"
+            )
 
         allowed_days = {WEEKDAYS[d.upper()] for d in self.params.entry_days if d.upper() in WEEKDAYS}
         is_entry_day = ctx.now.weekday() in allowed_days
         if not (is_entry_day or self.move_exhausted(ctx)):
-            return None
+            days = "/".join(self.params.entry_days)
+            return self._skip(
+                f"{ctx.now:%A} is not an entry day ({days}) and no exhausted move "
+                "at a cloud edge"
+            )
 
         return self.build_condor(ctx)
 
@@ -115,33 +120,29 @@ class TrackBWeeklyCondor(Strategy):
         short_call = select_by_delta(ctx.chain, "CE", target, tolerance)
         short_put = select_by_delta(ctx.chain, "PE", target, tolerance)
         if short_call is None or short_put is None:
-            LOG.info("Track B: no strikes near delta %.2f in the chain.", target)
-            return None
+            return self._skip(f"no strikes near delta {target:.2f} in the chain")
 
         wing = self.params.wing_width_points
         long_call = find_strike(ctx.chain, short_call.strike + wing, "CE")
         long_put = find_strike(ctx.chain, short_put.strike - wing, "PE")
         if long_call is None or long_put is None:
-            LOG.info(
-                "Track B: %d-point wings unavailable around %d/%d.",
-                wing, int(short_call.strike), int(short_put.strike),
+            return self._skip(
+                f"{wing}-point wings unavailable around "
+                f"{int(short_put.strike)}/{int(short_call.strike)}"
             )
-            return None
 
         if short_put.strike >= short_call.strike:
-            LOG.warning("Track B: short strikes inverted; skipping.")
-            return None
+            return self._skip("short strikes inverted; chain looks wrong")
 
         credit = round(
             (short_call.mid + short_put.mid) - (long_call.mid + long_put.mid), 2
         )
         if credit <= 0:
-            LOG.info("Track B: structure prices to a debit (Rs %.2f); skipping.", credit)
-            return None
+            return self._skip(f"structure prices to a debit (Rs {credit:.2f}), not a credit")
 
         lots = self.size_position(credit, margin_per_lot)
         if lots < 1:
-            return None
+            return self._skip("margin per lot exceeds the Track B allocation")
 
         quantity = lots * self.config.lot_size
         max_loss_per_unit = round(wing - credit, 2)

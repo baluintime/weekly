@@ -40,26 +40,29 @@ class TrackAIntradayMomentum(Strategy):
         self, ctx: MarketContext, open_trades: Sequence[Trade]
     ) -> TradePlan | None:
         if not self.params.enabled:
-            return None
+            return self._skip("track disabled in config")
 
         mine = [t for t in open_trades if t.track == self.track]
         if any(t.is_open for t in mine):
-            return None                       # one directional bet at a time
+            return self._skip("already holding a Track A position")
 
         today = [t for t in mine if t.opened_at.date() == ctx.today]
         if len(today) >= self.params.max_trades_per_day:
-            LOG.debug("Track A: daily trade cap (%d) reached.", self.params.max_trades_per_day)
-            return None
+            return self._skip(
+                f"daily trade cap reached ({self.params.max_trades_per_day} trades)"
+            )
 
-        if self.in_cooldown(today, ctx.now):
-            return None
+        cooling = self.cooldown_until(today, ctx.now)
+        if cooling is not None:
+            return self._skip(f"in re-entry cooldown until {cooling:%H:%M}")
 
         if not self.in_window(ctx.now, self.params.entry_window):
-            return None
+            start, end = self.params.entry_window
+            return self._skip(f"outside the entry window ({start}-{end})")
 
         direction = self.detect_breakout(ctx.candles)
         if direction is None:
-            return None
+            return self._skip(self.last_skip_reason or "no breakout setup")
 
         option_type = "CE" if direction > 0 else "PE"
         max_premium = self.params.max_outlay_per_trade / self.config.lot_size
@@ -71,14 +74,17 @@ class TrackAIntradayMomentum(Strategy):
             max_premium=max_premium,
         )
         if quote is None:
-            LOG.info("Track A: no strike in the %.2f-%.2f delta band.",
-                     self.params.min_delta, self.params.max_delta)
-            return None
+            return self._skip(
+                f"no {option_type} strike in the {self.params.min_delta:.2f}-"
+                f"{self.params.max_delta:.2f} delta band"
+            )
 
         return self.build_plan(quote, direction, ctx)
 
-    def in_cooldown(self, todays_trades: Sequence[Trade], now: datetime) -> bool:
-        """Block an immediate re-entry on the same signal after an exit.
+    def cooldown_until(
+        self, todays_trades: Sequence[Trade], now: datetime
+    ) -> datetime | None:
+        """When the post-exit cooldown lifts, or None if it is not active.
 
         The breakout candles that triggered the trade are still in the window
         right after a target or stop fills, so without this the engine would
@@ -86,26 +92,29 @@ class TrackAIntradayMomentum(Strategy):
         """
         minutes = self.params.reentry_cooldown_minutes
         if minutes <= 0:
-            return False
+            return None
         for trade in todays_trades:
-            if trade.closed_at and (now - trade.closed_at).total_seconds() < minutes * 60:
-                LOG.debug(
-                    "Track A: in cooldown until %s.",
-                    trade.closed_at + timedelta(minutes=minutes),
-                )
-                return True
-        return False
+            if not trade.closed_at:
+                continue
+            lifts = trade.closed_at + timedelta(minutes=minutes)
+            if now < lifts:
+                return lifts
+        return None
+
+    def in_cooldown(self, todays_trades: Sequence[Trade], now: datetime) -> bool:
+        return self.cooldown_until(todays_trades, now) is not None
 
     def detect_breakout(self, candles: Sequence[Candle]) -> int | None:
         """+1 for a bullish breakout, -1 for bearish, None for no setup."""
         slow = self.params.macd[1]
-        if len(candles) < max(self.params.ichimoku[2], slow) + 5:
-            return None
+        needed = max(self.params.ichimoku[2], slow) + 5
+        if len(candles) < needed:
+            return self._skip(f"warming up: {len(candles)}/{needed} candles")
 
         closes = [c.close for c in candles]
         ema20 = ema(closes, self.params.ema_period)
         if ema20[-1] is None:
-            return None
+            return self._skip("20 EMA not yet defined")
 
         macd_values = macd(closes, *self.params.macd)
         cloud = ichimoku(candles, *self.params.ichimoku)
@@ -113,13 +122,13 @@ class TrackAIntradayMomentum(Strategy):
         last, previous = candles[-1], candles[-2]
         histogram = macd_values.hist_at(-1)
         if histogram is None or not macd_values.histogram_expanding():
-            return None
+            return self._skip("MACD histogram is not expanding")
 
         if not self._consolidated_near_reference(candles, ema20, cloud):
-            return None
+            return self._skip("no consolidation near the 20 EMA / cloud to break out of")
 
         if not self._is_strong_candle(last, candles):
-            return None
+            return self._skip("last candle lacks breakout range or body")
 
         bullish = (
             last.close > last.open
@@ -140,7 +149,7 @@ class TrackAIntradayMomentum(Strategy):
         )
         if bearish:
             return -1
-        return None
+        return self._skip("breakout candle did not clear the cloud and 20 EMA")
 
     def _consolidated_near_reference(
         self, candles: Sequence[Candle], ema20, cloud, lookback: int = 5
@@ -177,15 +186,15 @@ class TrackAIntradayMomentum(Strategy):
     ) -> TradePlan | None:
         premium = quote.mid or quote.ltp
         if premium <= 0:
-            return None
+            return self._skip(f"no price for {quote.symbol}")
 
         lots = self.size_position(premium)
         if lots < 1:
-            LOG.info(
-                "Track A: %s at Rs %.2f cannot be sized inside the Rs %.0f outlay cap.",
-                quote.symbol, premium, self.params.max_outlay_per_trade,
+            return self._skip(
+                f"{quote.symbol} at Rs {premium:.2f} needs "
+                f"Rs {premium * self.config.lot_size:,.0f} per lot, over the "
+                f"Rs {self.params.max_outlay_per_trade:,.0f} outlay cap"
             )
-            return None
 
         quantity = lots * self.config.lot_size
         risk_per_unit = self.params.risk_per_trade / quantity

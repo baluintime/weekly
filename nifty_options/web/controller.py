@@ -304,6 +304,9 @@ class DashboardController:
             "running": self.running,
             "engine_ready": engine is not None,
             "last_tick": self._last_tick,
+            # Read the engine directly rather than the last tick report, so the
+            # panel is populated however the evaluation was driven.
+            "waiting_on": dict(engine.entry_status) if engine is not None else {},
             "last_error": self._last_error,
             "upstox": {**token_status(config), "api_key": mask(config.upstox.api_key)},
             "login": self._login_state,

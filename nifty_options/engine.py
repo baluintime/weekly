@@ -58,6 +58,9 @@ class Engine:
             self.strategies.append(TrackBWeeklyCondor(config))
         self.open_trades: list[Trade] = []
         self.recent_closed: list[Trade] = []
+        # Per-track answer to "why is nothing happening?", refreshed each tick.
+        self.entry_status: dict[str, str] = {}
+        self.last_block_reason: str = ""
         self.state_file = config.state_dir / f"open_trades_{config.mode.value}.json"
         self._expiry_cache: tuple[date, str] | None = None
         self._chain_cache: tuple[float, list[OptionQuote]] | None = None
@@ -275,17 +278,21 @@ class Engine:
             "opened": [t.description for t in opened],
             "closed": [f"{t.description}: {t.exit_reason}" for t in closed],
             "open_trades": len([t for t in self.open_trades if t.is_open]),
+            "waiting_on": dict(self.entry_status),
             "risk": self.risk.status(),
         }
 
     # ------------------------------------------------------------------ #
     def look_for_entries(self, ctx: MarketContext) -> list[Trade]:
         opened: list[Trade] = []
+        self.entry_status = {}
         for strategy in self.strategies:
+            strategy.last_skip_reason = ""
             # Strategies see closed trades too, so daily caps and cooldowns
             # survive within the session.
             plan = strategy.evaluate_entry(ctx, self.open_trades + self.recent_closed)
             if plan is None:
+                self.entry_status[strategy.track] = strategy.last_skip_reason or "no setup"
                 continue
 
             if isinstance(strategy, TrackBWeeklyCondor):
@@ -293,20 +300,30 @@ class Engine:
                 if margin:
                     resized = strategy.build_condor(ctx, margin_per_lot=margin)
                     if resized is None:
+                        self.entry_status[strategy.track] = (
+                            strategy.last_skip_reason or "structure failed the margin check"
+                        )
                         continue
                     plan = resized
 
             trade = self.open_trade(plan, ctx)
             if trade:
                 opened.append(trade)
+                self.entry_status[strategy.track] = f"entered {plan.description}"
+            else:
+                self.entry_status[strategy.track] = (
+                    self.last_block_reason or "entry blocked by risk limits"
+                )
         return opened
 
     def open_trade(self, plan: TradePlan, ctx: MarketContext) -> Trade | None:
+        self.last_block_reason = ""
         orders = plan.to_orders(self.config.product)
         for order in orders:
             allowed, reason = self.risk.can_open(order, opening=True)
             if not allowed:
                 LOG.warning("Entry blocked for %s: %s", plan.description, reason)
+                self.last_block_reason = reason
                 return None
 
         LOG.info("ENTRY %s | %s | %s", plan.track, plan.description, plan.rationale)
@@ -465,6 +482,7 @@ class Engine:
             ", ".join(s.track for s in self.strategies) or "none",
         )
         ticks = 0
+        last_waiting: dict[str, str] = {}
         while max_ticks is None or ticks < max_ticks:
             if stop_event is not None and stop_event.is_set():
                 LOG.info("Stop requested -- leaving open positions untouched.")
@@ -474,6 +492,11 @@ class Engine:
                 if report.get("opened") or report.get("closed"):
                     LOG.info("Tick: %s", report)
                 else:
+                    waiting = report.get("waiting_on") or {}
+                    if waiting != last_waiting:
+                        for track, reason in sorted(waiting.items()):
+                            LOG.info("%s: no entry -- %s", track, reason)
+                        last_waiting = waiting
                     LOG.debug("Tick: %s", report)
                 if on_tick is not None:
                     on_tick(report)

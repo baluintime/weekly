@@ -152,6 +152,32 @@ function renderTiles() {
     .join("");
 }
 
+/** The per-track answer to "it has been an hour and nothing has happened". */
+function renderWaiting() {
+  const waiting = state.waiting_on || {};
+  const tracks = Object.keys(waiting).sort();
+  const card = $("waitingCard");
+  card.classList.toggle("hidden", tracks.length === 0);
+  if (!tracks.length) return;
+
+  const tick = state.last_tick || {};
+  $("waitingTime").textContent = tick.time
+    ? `as of ${String(tick.time).slice(11, 16)}` + (tick.spot ? ` · spot ${Math.round(tick.spot)}` : "")
+    : "";
+
+  $("waiting").innerHTML = tracks
+    .map((track) => {
+      const reason = waiting[track];
+      const entered = /^entered /.test(reason);
+      return `<li class="${entered ? "ok" : "no"}">
+        <span class="mark">${entered ? "✓" : "…"}</span>
+        <span><strong>${escapeHtml(track)}</strong></span>
+        <span class="detail" style="margin-left:auto;text-align:right;max-width:34rem;white-space:normal">
+          ${escapeHtml(reason)}</span></li>`;
+    })
+    .join("");
+}
+
 function renderComparison() {
   const rows = [
     ["Trades", "trades", (v) => v],
@@ -410,6 +436,7 @@ async function refresh() {
   renderMode();
   renderEngine();
   renderTiles();
+  renderWaiting();
   renderComparison();
   renderPositions();
   renderJournal();

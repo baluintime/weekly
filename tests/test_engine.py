@@ -237,3 +237,89 @@ def test_entry_caps_survive_a_restart(config):
     restarted = Engine(config, engine.broker, client)
     assert len(restarted.recent_closed) == 1
     assert restarted.recent_closed[0].track == "Track B"
+
+
+# ---------------------------------------------------------------------- #
+# "why is nothing happening?" -- every declined entry names its reason
+# ---------------------------------------------------------------------- #
+def test_idle_tick_explains_each_track(config):
+    """A quiet Wednesday: neither track enters, and both say why."""
+    client = FakeUpstoxClient(breakout=False)
+    engine = make_engine(config, client)
+    report = engine.tick(engine.build_context(now=later(days=2)))
+
+    assert report["opened"] == []
+    assert set(report["waiting_on"]) == {"Track A", "Track B"}
+    assert all(reason for reason in report["waiting_on"].values())
+
+
+def test_track_b_does_enter_a_quiet_monday(config):
+    """Chop is Track B's setup, so a flat Monday is an entry, not an idle tick."""
+    config.track_a.enabled = False
+    client = FakeUpstoxClient(breakout=False)
+    engine = make_engine(config, client)
+    report = engine.tick(engine.build_context(now=monday_11am()))
+    assert report["opened"]
+    assert report["waiting_on"]["Track B"].startswith("entered ")
+
+
+def test_reason_names_the_entry_window(config):
+    client = FakeUpstoxClient(breakout=True)
+    engine = make_engine(config, client)
+    report = engine.tick(engine.build_context(now=later(hours=4)))   # 15:00
+    assert "entry window" in report["waiting_on"]["Track A"]
+
+
+def test_reason_names_a_wrong_day_for_track_b(config):
+    config.track_a.enabled = False
+    client = FakeUpstoxClient()
+    engine = make_engine(config, client)
+    report = engine.tick(engine.build_context(now=later(days=2)))    # Wednesday
+    reason = report["waiting_on"]["Track B"]
+    assert "not an entry day" in reason or "days out" in reason
+
+
+def test_reason_names_the_expiry_window(config):
+    config.track_a.enabled = False
+    client = FakeUpstoxClient(expiry="2026-12-31")
+    engine = make_engine(config, client)
+    report = engine.tick(engine.build_context(now=monday_11am()))
+    assert "days out" in report["waiting_on"]["Track B"]
+
+
+def test_reason_names_the_cooldown(config):
+    config.track_b.enabled = False
+    client = FakeUpstoxClient(breakout=True)
+    engine = make_engine(config, client)
+    engine.tick(engine.build_context(now=monday_11am()))
+    trade = engine.open_trades[0]
+    client.set_price(trade.legs[0].instrument_key, trade.target + 5)
+    report = engine.tick(engine.build_context(now=later(minutes=5)))
+    assert "cooldown" in report["waiting_on"]["Track A"]
+
+
+def test_reason_names_the_kill_switch(config):
+    client = FakeUpstoxClient(breakout=True)
+    engine = make_engine(config, client)
+    engine.risk.engage_kill_switch("test halt")
+    report = engine.tick(engine.build_context(now=monday_11am()))
+    assert "kill switch" in report["waiting_on"]["Track A"].lower()
+
+
+def test_a_taken_entry_is_reported_as_entered(config):
+    config.track_b.enabled = False
+    client = FakeUpstoxClient(breakout=True)
+    engine = make_engine(config, client)
+    report = engine.tick(engine.build_context(now=monday_11am()))
+    assert report["waiting_on"]["Track A"].startswith("entered ")
+
+
+def test_status_is_recomputed_each_tick(config):
+    """A stale reason would be worse than none -- it must not persist."""
+    config.track_b.enabled = False
+    client = FakeUpstoxClient(breakout=True)
+    engine = make_engine(config, client)
+    engine.tick(engine.build_context(now=later(hours=4)))            # outside window
+    assert "entry window" in engine.entry_status["Track A"]
+    engine.tick(engine.build_context(now=monday_11am()))             # inside window
+    assert "entry window" not in engine.entry_status["Track A"]

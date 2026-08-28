@@ -227,6 +227,16 @@ class Strategy(ABC):
 
     def __init__(self, config: Config):
         self.config = config
+        self.last_skip_reason: str = ""
+
+    def _skip(self, reason: str) -> None:
+        """Record why no entry was taken, then decline.
+
+        Every `return None` path in a strategy goes through here, so "nothing
+        happened" is always explainable rather than silent.
+        """
+        self.last_skip_reason = reason
+        return None
 
     @abstractmethod
     def evaluate_entry(self, ctx: MarketContext, open_trades: Sequence[Trade]) -> TradePlan | None:
