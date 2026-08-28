@@ -93,8 +93,9 @@
       <header>
         <h2 id="modeTitle">Paper &#8596; actual trading</h2>
         <div class="segmented" role="group" aria-label="Trading mode">
-          <button data-mode="paper" aria-pressed="true">Paper</button>
-          <button data-mode="live" aria-pressed="false">Live</button>
+          <button data-session="paper" aria-pressed="true">Paper</button>
+          <button data-session="shadow" aria-pressed="false">Shadow</button>
+          <button data-session="live" aria-pressed="false">Live</button>
         </div>
       </header>
 
@@ -104,12 +105,19 @@
       <ul id="guards" class="checklist"></ul>
 
       <div id="confirmBox" class="hidden" style="margin-top:.875rem">
-        <label for="confirmInput">Type the confirmation phrase to arm real orders</label>
+        <label for="confirmInput">Type the confirmation phrase to connect to the live account</label>
         <input id="confirmInput" type="text" autocomplete="off" spellcheck="false" placeholder="">
         <div class="row" style="margin-top:.625rem">
-          <button id="armBtn" class="danger">Switch to live trading</button>
+          <button id="shadowBtn" class="primary">Arm shadow — live data, paper fills</button>
+          <button id="armBtn" class="danger">Go live — real orders</button>
           <button id="cancelArmBtn" class="ghost">Cancel</button>
         </div>
+        <p class="notice info" style="margin-top:.625rem">
+          <strong>Shadow</strong> connects to your live account for quotes, the option chain,
+          contract specs and margin, but settles fills internally — the order API is not
+          reachable at all. It keeps its own journal, so shadow results never mix with
+          paper or live ones. Run it here before going live.
+        </p>
       </div>
     </section>
   </div>

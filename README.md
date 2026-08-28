@@ -101,6 +101,37 @@ falls back to printing the URL and reading the code back.
 
 ---
 
+## Three sessions, not two
+
+| Session | Market data | Orders | Journal |
+|---|---|---|---|
+| **Paper** | live | simulated | `tracking_sheet_paper.csv` |
+| **Shadow** | live, from your account | simulated | `tracking_sheet_shadow.csv` |
+| **Live** | live, from your account | **real** | `tracking_sheet_live.csv` |
+
+Paper already runs on live market data — quotes, the option chain and the
+contract master are all real; only the fills are simulated.
+
+**Shadow** goes one step further: it clears every live guard and connects to
+your live account for quotes, chain, contract specs and margin quotes, but
+settles fills internally. The order API is not merely skipped — in shadow the
+engine is handed a `PaperBroker`, which has no order-placing code path at all,
+so the exchange is unreachable by construction rather than by a flag.
+
+![Arming shadow](docs/shadow-mode.png)
+
+Each session keeps its own journal and its own simulated book, so shadow
+results never blend into paper or live records.
+
+```bash
+python -m nifty_options run --live --shadow   # live data, simulated fills
+python -m nifty_options run --live            # real orders
+```
+
+Run shadow for a full cycle before going live: it exercises the exact code
+path real trading uses — the same guards, the same contract data, the same
+sizing — and produces a complete P&L record to check, without risking a rupee.
+
 ## The paper ↔ actual trading switch
 
 Everything routes through one factory, `nifty_options.brokers.factory.build_broker`.
@@ -113,9 +144,11 @@ config / env / CLI  ──▶  TradingMode  ──▶  build_broker()  ──┬
 
 ### From the console
 
-Click **Live** in the mode switch, type the confirmation phrase, and the page
-tells you which guard — if any — is still blocking. The engine must be stopped
-before the mode can change, so a running loop can never have the broker swapped
+The mode switch has three states: **Paper · Shadow · Live**. Shadow and Live
+both connect to your live account, so both ask for the confirmation phrase;
+only Live can place an order, and only Live is painted red. The page tells you
+which guard — if any — is still blocking. The engine must be stopped before the
+session can change, so a running loop can never have its broker swapped
 underneath it.
 
 ### Checking what will happen before you run
@@ -158,13 +191,18 @@ paper mode, and the CLI tells you which one:
    scheduled runs).
 
 ```bash
-# 1. dry run first: the live code path, but orders are logged instead of sent
-python -m nifty_options run --live --dry-run
+export UPSTOX_LIVE_CONFIRM="I UNDERSTAND THIS TRADES REAL MONEY"
+
+# 1. shadow first: live account, simulated fills, full P&L record
+python -m nifty_options run --live --shadow
 
 # 2. the real thing
-export UPSTOX_LIVE_CONFIRM="I UNDERSTAND THIS TRADES REAL MONEY"
 python -m nifty_options run --live
 ```
+
+`UPSTOX_LIVE_CONFIRM` must be exported in the shell that launches the process,
+before it starts — it is read once at startup, and is deliberately not stored
+in a file so a committed config can never arm live on its own.
 
 Live mode prints a banner and every order is logged at `WARNING` before it goes out:
 
@@ -276,7 +314,7 @@ nifty_options/
 ```
 
 ```bash
-python -m pytest tests/ -q      # 184 tests, no network or credentials needed
+python -m pytest tests/ -q      # 195 tests, no network or credentials needed
 ```
 
 ---

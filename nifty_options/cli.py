@@ -6,7 +6,7 @@
     python -m nifty_options mode                   # what will happen if I run?
     python -m nifty_options run                    # paper (default)
     python -m nifty_options run --mode live        # actual trading, if armed
-    python -m nifty_options run --live --dry-run   # live path, orders logged only
+    python -m nifty_options run --live --shadow    # live data, simulated fills
     python -m nifty_options status
     python -m nifty_options report
     python -m nifty_options panic                  # kill switch + flatten
@@ -55,9 +55,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="shorthand for --mode live (actual trading)",
     )
     parser.add_argument(
+        "--shadow",
         "--dry-run",
+        dest="shadow",
         action="store_true",
-        help="with --live: run the live path but log orders instead of sending them",
+        help="with --live: connect to the live account for data but simulate fills "
+             "(no order can reach the exchange)",
     )
     parser.add_argument("--yes", action="store_true", help="skip the interactive live confirmation")
     parser.add_argument("--log-level", default=None)
@@ -106,7 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
 def load_config(args: argparse.Namespace) -> Config:
     mode = args.mode or ("live" if args.live else None)
     config = Config.load(args.config, mode=mode)
-    if args.dry_run:
+    if args.shadow:
         config.live.dry_run = True
     if args.log_level:
         config.log_level = args.log_level
@@ -116,8 +119,12 @@ def load_config(args: argparse.Namespace) -> Config:
 
 
 def confirm_live(config: Config, skip: bool) -> bool:
-    """Final human gate. `--yes` bypasses it for scheduled/automated runs."""
-    if not config.mode.is_live or config.live.dry_run:
+    """Final human gate before real orders.
+
+    Shadow still clears every config guard, but nothing it does can reach the
+    exchange, so it does not need the typed confirmation.
+    """
+    if not config.sends_real_orders:
         return True
     if skip:
         LOG.warning("Live confirmation skipped via --yes.")
@@ -190,7 +197,8 @@ def cmd_dashboard(config: Config, args: argparse.Namespace) -> int:
 def cmd_mode(config: Config) -> int:
     print(f"Effective mode : {config.mode.value.upper()}")
     print(f"What happens   : {describe_mode(config)}")
-    print(f"Journal        : {config.journal_dir / f'tracking_sheet_{config.mode.value}.csv'}")
+    print(f"Session        : {config.session_label.upper()}")
+    print(f"Journal        : {config.journal_dir / f'tracking_sheet_{config.session_label}.csv'}")
     print(f"Kill switch    : {config.risk.kill_switch_file} "
           f"({'ACTIVE' if config.risk.kill_switch_file.exists() else 'clear'})")
     token = load_token(config)
@@ -200,7 +208,8 @@ def cmd_mode(config: Config) -> int:
             "\nTo switch to actual trading:\n"
             "  1. config.yaml -> live.enabled: true\n"
             f'  2. export UPSTOX_LIVE_CONFIRM="{config.live.confirmation_phrase}"\n'
-            "  3. python -m nifty_options run --live"
+            "  3. python -m nifty_options run --live --shadow   (live data, paper fills)\n"
+            "  4. python -m nifty_options run --live            (real orders)"
         )
     return 0
 
@@ -255,7 +264,7 @@ def cmd_status(config: Config) -> int:
 
 
 def cmd_report(config: Config, args: argparse.Namespace) -> int:
-    journal = Journal(config.journal_dir, config.mode.value)
+    journal = Journal(config.journal_dir, config.session_label)
     report = comparison_report(journal)
     print(report)
     if args.markdown:

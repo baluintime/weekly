@@ -51,7 +51,7 @@ class Engine:
         self.broker = broker
         self.client = client or getattr(broker, "client", None)
         self.risk = RiskManager(config, broker)
-        self.journal = Journal(config.journal_dir, config.mode.value)
+        self.journal = Journal(config.journal_dir, config.session_label)
         self.strategies: list[Strategy] = []
         if config.track_a.enabled:
             self.strategies.append(TrackAIntradayMomentum(config))
@@ -62,7 +62,7 @@ class Engine:
         # Per-track answer to "why is nothing happening?", refreshed each tick.
         self.entry_status: dict[str, str] = {}
         self.last_block_reason: str = ""
-        self.state_file = config.state_dir / f"open_trades_{config.mode.value}.json"
+        self.state_file = config.state_dir / f"open_trades_{config.session_label}.json"
         self._expiry_cache: tuple[date, str] | None = None
         self.spec: ContractSpec | None = None
         self.expiries: list[ExpiryInfo] = []
@@ -393,7 +393,8 @@ class Engine:
 
         entry_price, charges = self._net_price(plan.legs, results)
         trade = Trade.from_plan(
-            plan, ctx.now, entry_price, self.config.lot_size, self.config.mode.value, ctx.expiry
+            plan, ctx.now, entry_price, self.config.lot_size,
+            self.config.session_label, ctx.expiry,
         )
         trade.charges = charges
         self.open_trades.append(trade)
@@ -490,7 +491,7 @@ class Engine:
                 exit=trade.exit_price,
                 net_points=trade.net_points(),
                 realized_pnl=pnl,
-                mode=self.config.mode.value,
+                mode=self.config.session_label,
                 lots=trade.lots,
                 charges=trade.charges,
                 exit_reason=reason,

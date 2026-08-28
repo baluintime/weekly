@@ -154,7 +154,9 @@ class LiveGuardConfig:
     confirmation_phrase: str = "I UNDERSTAND THIS TRADES REAL MONEY"
     max_capital: float = 400_000.0
     require_market_hours: bool = True
-    dry_run: bool = False                  # live mode, but log instead of send
+    # Shadow: armed live, connected to the live account, fills simulated.
+    # No order-placing code path is reachable while this is true.
+    dry_run: bool = False
 
 
 @dataclass
@@ -278,6 +280,22 @@ class Config:
                 f"Rs {self.live.max_capital:,.0f}. Lower the track capital or raise "
                 "the ceiling deliberately."
             )
+
+    @property
+    def session_label(self) -> str:
+        """paper | shadow | live -- names the run for journals and state.
+
+        Shadow is live-armed and reads everything from the live account, but
+        settles fills internally, so its record is kept apart from both the
+        pure paper book and the real one.
+        """
+        if not self.mode.is_live:
+            return "paper"
+        return "shadow" if self.live.dry_run else "live"
+
+    @property
+    def sends_real_orders(self) -> bool:
+        return self.mode.is_live and not self.live.dry_run
 
     def with_mode(self, mode: str | TradingMode) -> "Config":
         """Return a copy of this config switched to another mode."""

@@ -96,6 +96,7 @@ header {
   border: 1px solid transparent;
 }
 .mode-pill.paper { background: color-mix(in srgb, var(--series-1) 14%, transparent); color: var(--series-1); border-color: color-mix(in srgb, var(--series-1) 32%, transparent); }
+.mode-pill.shadow { background: color-mix(in srgb, var(--series-2) 15%, transparent); color: var(--series-2); border-color: color-mix(in srgb, var(--series-2) 36%, transparent); }
 .mode-pill.live { background: color-mix(in srgb, var(--critical) 16%, transparent); color: var(--critical); border-color: color-mix(in srgb, var(--critical) 40%, transparent); }
 .dot { width: .5rem; height: .5rem; border-radius: 50%; background: currentColor; }
 .dot.pulse { animation: pulse 1.8s ease-in-out infinite; }
@@ -156,7 +157,8 @@ label { display: block; font-size: .75rem; color: var(--text-secondary); margin-
 .segmented { display: inline-flex; padding: 3px; gap: 3px; background: var(--surface-2); border-radius: 10px; border: 1px solid var(--border); }
 .segmented button { border: 0; background: transparent; border-radius: 7px; padding: .375rem .875rem; color: var(--text-secondary); }
 .segmented button[aria-pressed="true"] { background: var(--surface-1); color: var(--text-primary); box-shadow: var(--shadow); font-weight: 600; }
-.segmented button[aria-pressed="true"][data-mode="live"] { color: var(--critical); }
+.segmented button[aria-pressed="true"][data-session="live"] { color: var(--critical); }
+.segmented button[aria-pressed="true"][data-session="shadow"] { color: var(--series-2); }
 
 .checklist { list-style: none; margin: 0; padding: 0; display: grid; gap: .4375rem; }
 .checklist li { display: flex; align-items: center; gap: .5rem; font-size: .8125rem; }

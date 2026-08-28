@@ -335,3 +335,68 @@ def test_status_is_recomputed_each_tick(config):
     assert "entry window" in engine.entry_status["Track A"]
     engine.tick(engine.build_context(now=entry_11am()))             # inside window
     assert "entry window" not in engine.entry_status["Track A"]
+
+
+# ---------------------------------------------------------------------- #
+# shadow: a full paper record taken off the live feed
+# ---------------------------------------------------------------------- #
+def shadow_config(config, monkeypatch):
+    from .test_mode_switch import arm_live
+
+    live = config.with_mode("live")
+    arm_live(live, monkeypatch)
+    live.live.dry_run = True
+    live.live.require_market_hours = False
+    return live
+
+
+def test_shadow_produces_a_real_paper_record(config, monkeypatch):
+    """The gap this closes: the old dry run logged orders and recorded nothing."""
+    live = shadow_config(config, monkeypatch)
+    live.track_b.enabled = False
+    client = FakeUpstoxClient(breakout=True)
+    engine = Engine(live, build_broker(live, client, mode="live"), client)
+
+    opened = engine.tick(engine.build_context(now=entry_11am()))["opened"]
+    assert opened                                   # a position actually exists
+    trade = engine.open_trades[0]
+    assert trade.mode == "shadow"
+
+    client.set_price(trade.legs[0].instrument_key, trade.target + 5)
+    closed = engine.tick(engine.build_context(now=later(minutes=30)))["closed"]
+
+    assert closed
+    rows = engine.journal.rows()
+    assert len(rows) == 1
+    assert rows[0]["Mode"] == "shadow"
+    assert float(rows[0]["Realized PnL (Rs)"]) > 0    # real P&L, not a stub
+
+
+def test_shadow_never_reaches_the_order_api(config, monkeypatch):
+    live = shadow_config(config, monkeypatch)
+    client = FakeUpstoxClient(breakout=True)
+    engine = Engine(live, build_broker(live, client, mode="live"), client)
+    engine.tick(engine.build_context(now=entry_11am()))
+    engine.square_off_all("end of shadow run")
+    assert client.placed == []
+
+
+def test_shadow_reads_contract_facts_from_the_live_account(config, monkeypatch):
+    live = shadow_config(config, monkeypatch)
+    live.lot_size = 75
+    client = FakeUpstoxClient(breakout=True, lot_size=65)
+    engine = Engine(live, build_broker(live, client, mode="live"), client)
+    engine.tick(engine.build_context(now=entry_11am()))
+    assert engine.spec.from_exchange is True
+    assert live.lot_size == 65
+    assert all(t.lot_size == 65 for t in engine.open_trades)
+
+
+def test_shadow_and_paper_journals_stay_separate(config, monkeypatch):
+    live = shadow_config(config, monkeypatch)
+    live.journal_dir = config.journal_dir
+    shadow_engine = Engine(live, build_broker(live, FakeUpstoxClient(), mode="live"),
+                           FakeUpstoxClient())
+    paper_engine = make_engine(config, FakeUpstoxClient())
+    assert shadow_engine.journal.path != paper_engine.journal.path
+    assert "shadow" in shadow_engine.journal.path.name

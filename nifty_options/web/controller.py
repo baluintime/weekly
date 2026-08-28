@@ -148,7 +148,9 @@ class DashboardController:
     # ------------------------------------------------------------------ #
     # mode switch
     # ------------------------------------------------------------------ #
-    def switch_mode(self, mode: str, confirmation: str = "") -> dict[str, Any]:
+    def switch_mode(
+        self, mode: str, confirmation: str = "", shadow: bool | None = None
+    ) -> dict[str, Any]:
         """Flip between paper and actual trading from the UI.
 
         Live still has to clear every guard in `Config.assert_live_allowed`;
@@ -161,8 +163,12 @@ class DashboardController:
                 return {"ok": False, "message": "Stop the engine before switching mode."}
 
             target = Config.resolve_mode(mode)
+            previous_dry_run = self.config.live.dry_run
+            if target.is_live and shadow is not None:
+                self.config.live.dry_run = bool(shadow)
             if target.is_live:
                 if confirmation.strip() != self.config.live.confirmation_phrase:
+                    self.config.live.dry_run = previous_dry_run
                     return {
                         "ok": False,
                         "message": "The confirmation phrase does not match. "
@@ -172,15 +178,19 @@ class DashboardController:
                 try:
                     probe.assert_live_allowed()
                 except ConfigError as exc:
+                    self.config.live.dry_run = previous_dry_run
                     return {"ok": False, "message": str(exc)}
 
             self.config.mode = target
             self._engine = None                       # rebuilt against the new broker
             self._last_tick = {}
-            LOG.warning("Trading mode switched to %s.", target.value.upper())
+            LOG.warning(
+                "Trading mode switched to %s.", self.config.session_label.upper()
+            )
             return {
                 "ok": True,
                 "mode": target.value,
+                "session": self.config.session_label,
                 "message": describe_mode(self.config),
             }
 
@@ -296,6 +306,8 @@ class DashboardController:
 
         return {
             "mode": config.mode.value,
+            "session": config.session_label,
+            "sends_real_orders": config.sends_real_orders,
             "mode_description": describe_mode(config),
             "live_blocked": blocked,
             "live_armed": config.live.enabled,
@@ -412,7 +424,7 @@ class DashboardController:
         ]
 
     def journal_view(self, mode: str | None = None) -> dict[str, Any]:
-        journal = Journal(self.config.journal_dir, mode or self.config.mode.value)
+        journal = Journal(self.config.journal_dir, mode or self.config.session_label)
         rows = journal.rows()
         equity: list[dict[str, Any]] = []
         running = 0.0
@@ -433,4 +445,6 @@ class DashboardController:
         }
 
     def report_markdown(self, mode: str | None = None) -> str:
-        return comparison_report(Journal(self.config.journal_dir, mode or self.config.mode.value))
+        return comparison_report(
+            Journal(self.config.journal_dir, mode or self.config.session_label)
+        )

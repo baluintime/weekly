@@ -33,7 +33,7 @@ def test_mode_command_reports_paper(capsys):
     assert cli.main(["mode"]) == 0
     out = capsys.readouterr().out
     assert "PAPER" in out
-    assert "nothing is sent to the exchange" in out
+    assert "simulated fills" in out
 
 
 def test_mode_command_explains_how_to_go_live(capsys):

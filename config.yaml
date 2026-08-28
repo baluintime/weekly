@@ -111,7 +111,11 @@ live:
   confirmation_phrase: "I UNDERSTAND THIS TRADES REAL MONEY"
   max_capital: 400000           # refuse to arm live above this total capital
   require_market_hours: true
-  dry_run: false                # true = live code path, orders logged not sent
+  # Shadow: armed live and reading the live account for quotes, the chain,
+  # contract specs and margin, but fills are settled internally. The engine is
+  # handed a paper broker, so no order-placing code path exists at all.
+  # Journalled separately as tracking_sheet_shadow.csv.
+  dry_run: false
 
 journal_dir: data/journal
 state_dir: data/state

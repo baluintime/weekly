@@ -160,15 +160,49 @@ def live_broker(config, fake_client, monkeypatch):
     return build_broker(live, fake_client, mode="live")
 
 
-def test_dry_run_sends_nothing(config, fake_client, monkeypatch):
+def test_shadow_fills_internally_and_sends_nothing(config, fake_client, monkeypatch):
+    """Shadow is armed live but settles fills itself; the exchange is untouched."""
     arm_live(config, monkeypatch)
     live = config.with_mode("live")
     live.live.dry_run = True
     live.live.require_market_hours = False
     broker = build_broker(live, fake_client, mode="live")
+
     result = broker.place_order(order())
-    assert result.order_id == "DRYRUN"
-    assert fake_client.placed == []
+    assert result.is_filled                      # a real paper fill, not a stub
+    assert result.average_price > 0
+    assert fake_client.placed == []              # nothing reached the order API
+
+
+def test_shadow_broker_has_no_order_api_path(config, fake_client, monkeypatch):
+    """Safety by construction: the broker cannot reach the order endpoints."""
+    arm_live(config, monkeypatch)
+    live = config.with_mode("live")
+    live.live.dry_run = True
+    broker = build_broker(live, fake_client, mode="live")
+    assert isinstance(broker, PaperBroker)
+    assert not isinstance(broker, LiveBroker)
+    assert live.session_label == "shadow"
+    assert live.sends_real_orders is False
+
+
+def test_shadow_still_requires_every_live_guard(config, fake_client):
+    """Shadow is not a way around the checklist."""
+    unarmed = config.with_mode("live")
+    unarmed.live.dry_run = True
+    with pytest.raises(LiveTradingBlocked):
+        build_broker(unarmed, fake_client, mode="live")
+
+
+def test_shadow_keeps_its_own_journal_and_book(config, fake_client, monkeypatch):
+    arm_live(config, monkeypatch)
+    live = config.with_mode("live")
+    live.live.dry_run = True
+    live.live.require_market_hours = False
+    shadow = build_broker(live, fake_client, mode="live")
+    paper = build_broker(config, fake_client)
+    assert shadow.state_file != paper.state_file
+    assert "shadow" in shadow.state_file.name
 
 
 def test_kill_switch_blocks_live_orders(live_broker, fake_client, config):

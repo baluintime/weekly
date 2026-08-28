@@ -25,9 +25,18 @@ LIVE_BANNER = """
   LIVE TRADING ARMED -- ORDERS WILL USE REAL MONEY
   Capital at risk : Rs {capital:,.0f}
   Max order value : Rs {max_order:,.0f}
-  Dry run         : {dry_run}
   Kill switch     : touch {kill_switch}
 ================================================================
+"""
+
+SHADOW_BANNER = """
+----------------------------------------------------------------
+  SHADOW MODE -- live data, simulated fills
+  Connected to the live Upstox account for quotes, the option
+  chain, contract specs and margin. Fills are settled internally,
+  so no order ever reaches the exchange.
+  Journal: tracking_sheet_shadow.csv
+----------------------------------------------------------------
 """
 
 
@@ -71,11 +80,17 @@ def build_broker(
     client = client or build_client(config, required=True)
     assert client is not None
 
+    if config.live.dry_run:
+        # Shadow: armed live and reading the live account, but handed a
+        # PaperBroker, which has no order-placing code path at all. The
+        # exchange is unreachable from here by construction, not by a flag.
+        LOG.warning(SHADOW_BANNER)
+        return PaperBroker(config, client)
+
     LOG.warning(
         LIVE_BANNER.format(
             capital=config.track_a.capital + config.track_b.capital,
             max_order=config.risk.live_max_order_value,
-            dry_run=config.live.dry_run,
             kill_switch=config.risk.kill_switch_file,
         )
     )
@@ -85,10 +100,17 @@ def build_broker(
 def describe_mode(config: Config) -> str:
     """Human-readable answer to 'am I about to trade real money?'."""
     if not config.mode.is_live:
-        return "PAPER -- simulated fills, nothing is sent to the exchange."
+        return (
+            "PAPER -- live market data, simulated fills. "
+            "Nothing is sent to the exchange."
+        )
     try:
         config.assert_live_allowed()
     except ConfigError as exc:
         return f"LIVE requested but BLOCKED: {exc}"
-    suffix = " (dry run -- orders logged, not sent)" if config.live.dry_run else ""
-    return f"LIVE -- real orders will be placed on Upstox{suffix}."
+    if config.live.dry_run:
+        return (
+            "SHADOW -- armed live and reading the live account, but fills are "
+            "simulated. No order can reach the exchange."
+        )
+    return "LIVE -- real orders will be placed on Upstox."

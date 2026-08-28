@@ -187,7 +187,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         actions: dict[str, Callable[[], dict[str, Any]]] = {
             "/api/mode": lambda: controller.switch_mode(
-                body.get("mode", "paper"), body.get("confirmation", "")
+                body.get("mode", "paper"),
+                body.get("confirmation", ""),
+                body.get("shadow"),
             ),
             "/api/engine/start": lambda: controller.start(int(body.get("poll", 60))),
             "/api/engine/stop": controller.stop,

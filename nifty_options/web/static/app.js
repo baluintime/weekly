@@ -74,16 +74,21 @@ function renderConnection() {
 
 function renderMode() {
   const live = state.mode === "live";
+  const shadow = state.session === "shadow";
   const pill = $("modePill");
-  pill.className = "mode-pill " + (live ? "live" : "paper");
-  $("modeText").textContent = live ? (state.dry_run ? "live · dry run" : "live · real money") : "paper";
+  // Shadow is armed live but cannot place an order, so it is not painted red.
+  pill.className = "mode-pill " + (shadow ? "shadow" : live ? "live" : "paper");
+  $("modeText").textContent = shadow
+    ? "live · shadow"
+    : live ? "live · real money" : "paper";
   document.querySelectorAll(".segmented button").forEach((button) => {
-    button.setAttribute("aria-pressed", String(button.dataset.mode === state.mode));
+    button.setAttribute("aria-pressed", String(button.dataset.session === state.session));
   });
 
   const description = $("modeDescription");
   description.textContent = state.mode_description || "";
-  description.className = "notice " + (live ? "danger" : "info");
+  // Only a session that can actually send orders gets the danger styling.
+  description.className = "notice " + (state.sends_real_orders ? "danger" : "info");
 
   $("guards").innerHTML = (state.guards || [])
     .map((g) => `<li class="${g.ok ? "ok" : "no"}">
@@ -101,9 +106,14 @@ function renderMode() {
       <strong>Kill switch engaged.</strong> No new entries will be taken.
       <button id="resumeBtn" class="ghost" style="margin-left:auto">Release</button></div>`;
     $("resumeBtn").onclick = () => act("/api/resume", {}, "Kill switch released");
-  } else if (live && !state.live_blocked) {
+  } else if (state.sends_real_orders && !state.live_blocked) {
     banner.innerHTML = `<div class="notice danger" style="margin-top:1rem">
       <strong>Live trading is armed.</strong> Orders placed from here use real money.</div>`;
+  } else if (shadow) {
+    banner.innerHTML = `<div class="notice info" style="margin-top:1rem">
+      <strong>Shadow mode.</strong> Connected to your live account for data;
+      fills are simulated and the order API is unreachable.
+      Results are journalled separately as <span class="mono">shadow</span>.</div>`;
   } else {
     banner.innerHTML = "";
   }
@@ -537,21 +547,36 @@ $("reconnectBtn").onclick = () => window.open("/auth/login", "_blank", "noopener
 
 document.querySelectorAll(".segmented button").forEach((button) => {
   button.onclick = () => {
-    const mode = button.dataset.mode;
-    if (mode === state.mode) return;
-    if (mode === "live") {
-      pendingMode = "live";
-      $("confirmBox").classList.remove("hidden");
-      $("confirmInput").focus();
-    } else {
+    const target = button.dataset.session;
+    if (target === state.session) return;
+    if (target === "paper") {
       act("/api/mode", { mode: "paper" });
+      return;
     }
+    // Shadow and live both connect to the live account, so both are confirmed.
+    pendingMode = target;
+    $("confirmBox").classList.remove("hidden");
+    $("shadowBtn").classList.toggle("primary", target === "shadow");
+    $("armBtn").classList.toggle("primary", false);
+    $("confirmInput").focus();
   };
 });
-$("armBtn").onclick = async () => {
-  const result = await act("/api/mode", { mode: "live", confirmation: $("confirmInput").value });
-  if (result.ok) { $("confirmBox").classList.add("hidden"); $("confirmInput").value = ""; pendingMode = null; }
-};
+async function armLive(shadow) {
+  if (!shadow && !confirm(
+    "This sends REAL orders to the exchange with REAL money.\n\n" +
+    "Run shadow mode first if you have not already. Continue?"
+  )) return;
+  const result = await act("/api/mode", {
+    mode: "live", confirmation: $("confirmInput").value, shadow,
+  });
+  if (result.ok) {
+    $("confirmBox").classList.add("hidden");
+    $("confirmInput").value = "";
+    pendingMode = null;
+  }
+}
+$("shadowBtn").onclick = () => armLive(true);
+$("armBtn").onclick = () => armLive(false);
 $("cancelArmBtn").onclick = () => {
   $("confirmBox").classList.add("hidden");
   $("confirmInput").value = "";

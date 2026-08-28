@@ -52,7 +52,9 @@ class PaperBroker(Broker):
     ):
         self.config = config
         self.client = client
-        self.state_file = state_file or (config.state_dir / "paper_book.json")
+        self.state_file = state_file or (
+            config.state_dir / f"book_{config.session_label}.json"
+        )
         self.fills = config.paper
         self._book = self._load_book()
 
@@ -159,7 +161,8 @@ class PaperBroker(Broker):
         )
         self.save()
         LOG.info(
-            "[PAPER] %s %s x%d @ %.2f (charges Rs %.2f)",
+            "[%s] %s %s x%d @ %.2f (charges Rs %.2f)",
+            self.config.session_label.upper(),
             request.side.value, request.symbol, request.quantity, price, charges,
         )
         return result
@@ -243,7 +246,7 @@ class PaperBroker(Broker):
     def summary(self) -> dict[str, Any]:
         positions = self.get_positions()
         return {
-            "mode": self.mode.value,
+            "mode": self.config.session_label,
             "cash": round(self._book.cash, 2),
             "realized_pnl": round(self._book.realized_pnl, 2),
             "unrealized_pnl": round(sum(p.unrealized_pnl for p in positions), 2),

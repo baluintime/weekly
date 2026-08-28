@@ -73,7 +73,9 @@ def test_state_endpoint_describes_the_mode(dashboard):
     base, _, _ = dashboard
     state = json.loads(get(base, "/api/state").read())
     assert state["mode"] == "paper"
-    assert "nothing is sent to the exchange" in state["mode_description"]
+    assert "simulated fills" in state["mode_description"]
+    assert state["session"] == "paper"
+    assert state["sends_real_orders"] is False
     assert len(state["guards"]) == 6
 
 
@@ -374,3 +376,60 @@ def test_log_tail_is_bounded():
         tail.emit(logging.LogRecord("n", logging.INFO, "p", 1, f"m{i}", None, None))
     assert len(tail.records) == 5
     assert tail.records[-1]["message"] == "m19"
+
+
+# ---------------------------------------------------------------------- #
+# shadow: armed live, live data, simulated fills
+# ---------------------------------------------------------------------- #
+def test_arming_shadow_over_http(dashboard, monkeypatch):
+    base, key, controller = dashboard
+    arm_live(controller.config, monkeypatch)
+    phrase = controller.config.live.confirmation_phrase
+    result = json.loads(
+        post(base, "/api/mode", {"mode": "live", "confirmation": phrase, "shadow": True}, key).read()
+    )
+    assert result["ok"] is True
+    assert result["session"] == "shadow"
+    assert controller.config.mode is TradingMode.LIVE
+    assert controller.config.sends_real_orders is False
+
+
+def test_shadow_state_is_reported_as_not_sending_orders(dashboard, monkeypatch):
+    base, key, controller = dashboard
+    arm_live(controller.config, monkeypatch)
+    post(base, "/api/mode",
+         {"mode": "live", "confirmation": controller.config.live.confirmation_phrase,
+          "shadow": True}, key)
+    state = json.loads(get(base, "/api/state").read())
+    assert state["mode"] == "live"
+    assert state["session"] == "shadow"
+    assert state["sends_real_orders"] is False
+    assert "simulated" in state["mode_description"].lower()
+
+
+def test_shadow_does_not_arm_real_orders_on_a_bad_phrase(dashboard, monkeypatch):
+    base, key, controller = dashboard
+    arm_live(controller.config, monkeypatch)
+    before = controller.config.live.dry_run
+    result = json.loads(
+        post(base, "/api/mode", {"mode": "live", "confirmation": "nope", "shadow": True}, key).read()
+    )
+    assert result["ok"] is False
+    assert controller.config.mode is TradingMode.PAPER
+    assert controller.config.live.dry_run == before      # no half-applied state
+
+
+def test_going_live_after_shadow_clears_the_flag(dashboard, monkeypatch):
+    base, key, controller = dashboard
+    arm_live(controller.config, monkeypatch)
+    phrase = controller.config.live.confirmation_phrase
+    post(base, "/api/mode", {"mode": "live", "confirmation": phrase, "shadow": True}, key)
+    assert controller.config.session_label == "shadow"
+
+    controller.config.mode = TradingMode.PAPER          # step back, then go live
+    result = json.loads(
+        post(base, "/api/mode",
+             {"mode": "live", "confirmation": phrase, "shadow": False}, key).read()
+    )
+    assert result["session"] == "live"
+    assert controller.config.sends_real_orders is True
