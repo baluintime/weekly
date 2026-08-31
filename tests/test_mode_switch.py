@@ -261,3 +261,86 @@ def test_armed_live_broker_actually_places(live_broker, fake_client):
     assert result.status is OrderStatus.COMPLETE
     assert len(fake_client.placed) == 1
     assert fake_client.placed[0]["transaction_type"] == "BUY"
+
+
+# ---------------------------------------------------------------------- #
+# confirmation-phrase diagnosis: say *how* it differs, not just "no match"
+# ---------------------------------------------------------------------- #
+from nifty_options.config import diagnose_phrase, set_env_hint    # noqa: E402
+
+PHRASE = "I UNDERSTAND THIS TRADES REAL MONEY"
+
+
+def test_exact_phrase_matches():
+    assert diagnose_phrase(PHRASE, PHRASE) == ""
+
+
+def test_surrounding_whitespace_is_tolerated():
+    assert diagnose_phrase(f"  {PHRASE}\n", PHRASE) == ""
+
+
+@pytest.mark.parametrize("value", [None, ""])
+def test_unset_is_distinguished_from_wrong(value):
+    assert "not set" in diagnose_phrase(value, PHRASE)
+
+
+def test_case_difference_is_named():
+    assert "capitalisation" in diagnose_phrase(PHRASE.lower(), PHRASE)
+
+
+def test_non_breaking_space_is_identified():
+    """The invisible one: pasted from a rendered page, looks identical."""
+    problem = diagnose_phrase(PHRASE.replace(" ", " "), PHRASE)
+    assert "non-standard character" in problem
+    assert "U+00A0" in problem
+
+
+def test_odd_characters_are_named_even_on_a_length_mismatch():
+    """Smart quotes change the length; the odd character is still the clue."""
+    problem = diagnose_phrase(PHRASE.replace("I", "\u2018I\u2019", 1), PHRASE)
+    assert "U+2018" in problem
+    assert "pasted" in problem
+
+
+def test_unquoted_shell_assignment_is_recognised():
+    """`export VAR=I UNDERSTAND ...` assigns only the first word."""
+    problem = diagnose_phrase("I", PHRASE)
+    assert "unquoted" in problem
+
+
+def test_a_typo_names_the_position():
+    problem = diagnose_phrase(PHRASE.replace("MONEY", "MONFY"), PHRASE)
+    assert "differs at character" in problem
+    assert "'F'" in problem
+
+
+def test_error_message_explains_the_env_var_is_not_the_typed_box(config, monkeypatch):
+    monkeypatch.delenv("UPSTOX_LIVE_CONFIRM", raising=False)
+    live = config.with_mode("live")
+    live.live.enabled = True
+    live.upstox.api_key = "k"
+    live.upstox.api_secret = "s"
+    with pytest.raises(LiveTradingBlocked) as excinfo:
+        live.assert_live_allowed()
+    message = str(excinfo.value)
+    assert "not set" in message
+    assert "not the phrase typed into the dashboard" in message
+    assert "restart" in message.lower()
+
+
+def test_checklist_detail_reports_how_it_differs(config, fake_client, monkeypatch):
+    from nifty_options.web.controller import DashboardController
+
+    monkeypatch.setenv("UPSTOX_LIVE_CONFIRM", PHRASE.lower())
+    detail = {
+        g["label"]: g for g in DashboardController(config).guards()
+    }["UPSTOX_LIVE_CONFIRM matches"]
+    assert detail["ok"] is False
+    assert "capitalisation" in detail["detail"]      # not a bare "not exported"
+
+
+def test_env_hint_matches_the_platform(monkeypatch):
+    monkeypatch.setattr("nifty_options.config.os.name", "nt")
+    assert "$env:" in set_env_hint("X", "y")
+    monkeypatch.setattr("nifty_options.config.os.name", "posix")
+    assert "export" in set_env_hint("X", "y")

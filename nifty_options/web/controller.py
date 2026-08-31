@@ -14,7 +14,7 @@ from datetime import date, datetime
 from typing import Any
 
 from ..brokers import build_broker, build_client, describe_mode
-from ..config import Config, ConfigError, TradingMode
+from ..config import Config, ConfigError, TradingMode, diagnose_phrase
 from ..credentials import mask, save_credentials
 from ..engine import Engine
 from ..journal import Journal, comparison_report, evaluate
@@ -388,7 +388,9 @@ class DashboardController:
 
         config = self.config
         token = token_status(config)
-        confirm = os.getenv("UPSTOX_LIVE_CONFIRM", "").strip()
+        phrase_problem = diagnose_phrase(
+            os.getenv("UPSTOX_LIVE_CONFIRM"), config.live.confirmation_phrase
+        )
         deployed = config.track_a.capital + config.track_b.capital
         return [
             {
@@ -408,8 +410,10 @@ class DashboardController:
             },
             {
                 "label": "UPSTOX_LIVE_CONFIRM matches",
-                "ok": confirm == config.live.confirmation_phrase,
-                "detail": "matched" if confirm == config.live.confirmation_phrase else "not exported",
+                "ok": not phrase_problem,
+                # Says *how* it differs -- "doesn't match" is useless when the
+                # value looks identical on screen.
+                "detail": phrase_problem or "matched",
             },
             {
                 "label": "Capital within live ceiling",

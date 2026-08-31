@@ -21,7 +21,14 @@ import sys
 from pathlib import Path
 
 from .brokers.factory import build_broker, build_client, describe_mode
-from .config import Config, ConfigError, LiveTradingBlocked, TradingMode
+from .config import (
+    Config,
+    ConfigError,
+    LiveTradingBlocked,
+    TradingMode,
+    diagnose_phrase,
+    set_env_hint,
+)
 from .engine import Engine
 from .journal import Journal, comparison_report
 from .logging_setup import setup_logging
@@ -203,12 +210,20 @@ def cmd_mode(config: Config) -> int:
           f"({'ACTIVE' if config.risk.kill_switch_file.exists() else 'clear'})")
     token = load_token(config)
     print(f"Upstox token   : {'valid until ' + token.expires_at if token else 'missing'}")
+
+    import os
+
+    problem = diagnose_phrase(
+        os.getenv("UPSTOX_LIVE_CONFIRM"), config.live.confirmation_phrase
+    )
+    print(f"Live confirm   : {problem or 'matched'}")
     if not config.mode.is_live:
         print(
             "\nTo switch to actual trading:\n"
             "  1. config.yaml -> live.enabled: true\n"
-            f'  2. export UPSTOX_LIVE_CONFIRM="{config.live.confirmation_phrase}"\n'
-            "  3. python -m nifty_options run --live --shadow   (live data, paper fills)\n"
+            "  2. set the confirmation variable in THIS shell, then start the app:\n"
+            + set_env_hint("UPSTOX_LIVE_CONFIRM", config.live.confirmation_phrase)
+            + "\n  3. python -m nifty_options run --live --shadow   (live data, paper fills)\n"
             "  4. python -m nifty_options run --live            (real orders)"
         )
     return 0

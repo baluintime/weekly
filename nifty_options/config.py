@@ -28,6 +28,90 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = REPO_ROOT / "config.yaml"
 
 
+def set_env_hint(name: str, value: str) -> str:
+    """The right syntax for the shell the operator is actually using."""
+    if os.name == "nt":
+        return (
+            f'  PowerShell:  $env:{name} = "{value}"\n'
+            f'  cmd.exe:     set {name}={value}'
+        )
+    return f'  export {name}="{value}"'
+
+
+def diagnose_phrase(actual: str | None, expected: str) -> str:
+    """Say precisely why a confirmation phrase does not match.
+
+    "Doesn't match" is useless when the value looks identical on screen: the
+    usual causes are invisible (unset in this process, a smart quote or
+    non-breaking space pasted from a rendered page, a case difference). This
+    names the actual difference instead. Returns "" when it matches.
+    """
+    import unicodedata
+
+    if actual is None or actual == "":
+        return "not set in this process's environment"
+
+    actual_clean, expected_clean = actual.strip(), expected.strip()
+    if actual_clean == expected_clean:
+        return ""
+
+    if actual_clean.casefold() == expected_clean.casefold():
+        return "set, but the capitalisation differs"
+
+    def normalise(text: str) -> str:
+        folded = unicodedata.normalize("NFKC", text)
+        # Map every kind of space and quote onto the plain ASCII forms.
+        for odd, plain in (
+            ("\u00a0", " "), ("\u2007", " "), ("\u202f", " "), ("\u2009", " "),
+            ("\u2018", "'"), ("\u2019", "'"), ("\u201c", '"'), ("\u201d", '"'),
+            ("\u2013", "-"), ("\u2014", "-"),
+        ):
+            folded = folded.replace(odd, plain)
+        return " ".join(folded.split())
+
+    # Non-ASCII characters are the invisible cause, so surface them on any
+    # mismatch, not only when the text is otherwise identical.
+    odd = sorted(
+        {
+            f"{ch!r} (U+{ord(ch):04X} {unicodedata.name(ch, 'unnamed')})"
+            for ch in actual_clean
+            if ord(ch) > 127
+        }
+    )
+    odd_note = (
+        f". It contains {', '.join(odd)}, so it was probably pasted from a "
+        "rendered page -- type it by hand"
+        if odd else ""
+    )
+
+    if normalise(actual_clean) == normalise(expected_clean):
+        return (
+            "set, and reads the same, but contains a non-standard character"
+            + (odd_note or ". Type it by hand rather than pasting")
+        )
+
+    if len(actual_clean) != len(expected_clean):
+        # A shell that ate the unquoted words leaves only the first one.
+        if expected_clean.startswith(actual_clean):
+            return (
+                f"set to only the first {len(actual_clean)} characters "
+                f"({actual_clean!r}) -- the value was almost certainly unquoted, "
+                "so the shell split it on spaces"
+            )
+        return (
+            f"set to {len(actual_clean)} characters, expected "
+            f"{len(expected_clean)}" + odd_note
+        )
+
+    for index, (got, want) in enumerate(zip(actual_clean, expected_clean)):
+        if got != want:
+            return (
+                f"set, but differs at character {index + 1}: "
+                f"got {got!r}, expected {want!r}" + odd_note
+            )
+    return "set, but does not match"
+
+
 class TradingMode(str, Enum):
     """Which broker implementation the engine talks to."""
 
@@ -260,12 +344,18 @@ class Config:
                 "Set live.enabled: true to arm actual trading."
             )
 
-        confirm = os.getenv("UPSTOX_LIVE_CONFIRM", "").strip()
-        if confirm != self.live.confirmation_phrase:
+        problem = diagnose_phrase(
+            os.getenv("UPSTOX_LIVE_CONFIRM"), self.live.confirmation_phrase
+        )
+        if problem:
             raise LiveTradingBlocked(
-                "Live mode requested but UPSTOX_LIVE_CONFIRM does not match "
-                "live.confirmation_phrase. Export:\n"
-                f'  export UPSTOX_LIVE_CONFIRM="{self.live.confirmation_phrase}"'
+                f"UPSTOX_LIVE_CONFIRM {problem}.\n\n"
+                "This is the environment variable, not the phrase typed into the "
+                "dashboard -- both are required, and the variable must be set in "
+                "the shell that STARTS the process, before it starts:\n"
+                + set_env_hint("UPSTOX_LIVE_CONFIRM", self.live.confirmation_phrase)
+                + "\n\nThen restart the process: a running one cannot see a "
+                "variable exported later, or in another window."
             )
 
         if not (self.upstox.api_key and self.upstox.api_secret):

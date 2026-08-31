@@ -200,9 +200,26 @@ python -m nifty_options run --live --shadow
 python -m nifty_options run --live
 ```
 
-`UPSTOX_LIVE_CONFIRM` must be exported in the shell that launches the process,
-before it starts — it is read once at startup, and is deliberately not stored
-in a file so a committed config can never arm live on its own.
+`UPSTOX_LIVE_CONFIRM` must be set in the shell that launches the process,
+**before it starts** — it is read once at startup, and is deliberately not
+stored in a file so a committed config can never arm live on its own. On
+Windows that is `$env:UPSTOX_LIVE_CONFIRM = "..."` (PowerShell) or
+`set UPSTOX_LIVE_CONFIRM=...` (cmd), not `export`.
+
+It is **separate from the phrase you type into the console**: the variable
+proves the shell operator intended live trading, the typed phrase proves the
+person at the browser did. Both are required, and typing it in the page does
+not set the variable.
+
+If it looks right but is rejected, ask what it actually sees:
+
+```bash
+python -m nifty_options mode        # prints "Live confirm: <exact reason>"
+```
+
+It names the real difference — unset, capitalisation, a non-breaking space or
+smart quote pasted from a rendered page, an unquoted shell assignment that
+kept only the first word, or the exact character position of a typo.
 
 Live mode prints a banner and every order is logged at `WARNING` before it goes out:
 
